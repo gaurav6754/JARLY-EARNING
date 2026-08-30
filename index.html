@@ -874,67 +874,88 @@
   const tg = window.Telegram.WebApp;
   tg.ready();
 
-  const telegramUser = tg.initDataUnsafe?.user;
-  const userId = telegramUser ? telegramUser.id : ('guest_' + Math.random().toString(36).substring(2, 8));
-  
-  const STORAGE_PREFIX = `jarly_user_${userId}_`;
+  // The RAW signed initData string — this (not initDataUnsafe) is what proves
+  // to the server "this really is Telegram user X". Never trust a client-side
+  // user id for anything that grants money; the server re-derives it from this.
+  const rawInitData = tg.initData;
 
-  // Local state variables
-  let balance = parseFloat(localStorage.getItem(STORAGE_PREFIX + 'balance')) || 0.00;
-  let totalEarned = parseFloat(localStorage.getItem(STORAGE_PREFIX + 'totalEarned')) || 0.00;
-  let totalWatched = parseInt(localStorage.getItem(STORAGE_PREFIX + 'totalWatched')) || 0;
-  let inviteCount = parseInt(localStorage.getItem(STORAGE_PREFIX + 'inviteCount')) || 0;
-  let inviteEarned = parseFloat(localStorage.getItem(STORAGE_PREFIX + 'inviteEarned')) || 0.00;
+  // These are placeholders until /api/auth responds with server-verified values.
+  let userId = tg.initDataUnsafe?.user?.id ? String(tg.initDataUnsafe.user.id) : null;
+  let balance = 0, totalEarned = 0, totalWatched = 0, watchedToday = 0, inviteCount = 0, inviteEarned = 0;
   let watching = false;
+  let authReady = false;
 
-  // Daily reset check
-  const todayStr = new Date().toDateString();
-  let storedDate = localStorage.getItem(STORAGE_PREFIX + 'date');
-  let watchedToday = parseInt(localStorage.getItem(STORAGE_PREFIX + 'watchedToday')) || 0;
+  const myInviteLink = () => `https://t.me/Jarly66_bot?start=ref_${userId}`;
 
-  if (storedDate !== todayStr) {
-    watchedToday = 0;
-    localStorage.setItem(STORAGE_PREFIX + 'date', todayStr);
-    localStorage.setItem(STORAGE_PREFIX + 'watchedToday', watchedToday);
+  // Local cache only (for instant paint before /api/auth returns) — never
+  // treated as the source of truth. The server response always wins.
+  const STORAGE_PREFIX = 'jarly_cache_';
+  function loadCache() {
+    try {
+      const cached = JSON.parse(localStorage.getItem(STORAGE_PREFIX + (userId || 'guest')) || '{}');
+      if (cached.balance !== undefined) balance = cached.balance;
+      if (cached.totalEarned !== undefined) totalEarned = cached.totalEarned;
+      if (cached.totalWatched !== undefined) totalWatched = cached.totalWatched;
+      if (cached.watchedToday !== undefined) watchedToday = cached.watchedToday;
+      if (cached.inviteCount !== undefined) inviteCount = cached.inviteCount;
+      if (cached.inviteEarned !== undefined) inviteEarned = cached.inviteEarned;
+    } catch {}
   }
 
-  // Generate Unique Referral Link using user's Telegram ID
-  const myInviteLink = `https://t.me/Jarly66_bot?start=ref_${userId}`;
-
-  // Handle incoming referrals via Telegram start_param or fallback url search params
-  const startParam = tg.initDataUnsafe?.start_param;
-  const urlParams = new URLSearchParams(window.location.search);
-  const refCode = startParam || urlParams.get('ref');
-
-  if (refCode && refCode !== String(userId)) {
-    fetch('/api/referral', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ referrerId: refCode, refereeId: userId })
-    })
-    .then(res => res.json())
-    .then(data => console.log(data.message))
-    .catch(err => console.error("Referral registration error:", err));
+  function applyServerState(data) {
+    userId = String(data.userId);
+    balance = data.balance;
+    totalEarned = data.totalEarned;
+    totalWatched = data.totalWatched;
+    watchedToday = data.watchedToday;
+    inviteCount = data.inviteCount;
+    inviteEarned = data.inviteEarned;
+    saveData();
+    refreshAllUI();
   }
 
-  // Parse withdrawal history
+  function saveData() {
+    localStorage.setItem(STORAGE_PREFIX + userId, JSON.stringify({
+      balance, totalEarned, totalWatched, watchedToday, inviteCount, inviteEarned
+    }));
+  }
+
+  // Parse withdrawal history (cosmetic/local only — server is source of truth for balance)
   let withdrawalHistory = [];
   try {
-    const savedHistory = localStorage.getItem(STORAGE_PREFIX + 'history');
+    const savedHistory = localStorage.getItem(STORAGE_PREFIX + 'history_' + (userId || 'guest'));
     if (savedHistory) {
       withdrawalHistory = JSON.parse(savedHistory);
       withdrawalHistory.forEach(item => item.date = new Date(item.date));
     }
   } catch(e) { console.error("Error loading history"); }
+  function saveHistory() {
+    localStorage.setItem(STORAGE_PREFIX + 'history_' + userId, JSON.stringify(withdrawalHistory));
+  }
 
-  function saveData() {
-    localStorage.setItem(STORAGE_PREFIX + 'balance', balance.toFixed(2));
-    localStorage.setItem(STORAGE_PREFIX + 'totalEarned', totalEarned.toFixed(2));
-    localStorage.setItem(STORAGE_PREFIX + 'totalWatched', totalWatched);
-    localStorage.setItem(STORAGE_PREFIX + 'watchedToday', watchedToday);
-    localStorage.setItem(STORAGE_PREFIX + 'inviteCount', inviteCount);
-    localStorage.setItem(STORAGE_PREFIX + 'inviteEarned', inviteEarned.toFixed(2));
-    localStorage.setItem(STORAGE_PREFIX + 'history', JSON.stringify(withdrawalHistory));
+  // Extract the referral code from the deep link (?start=ref_XXXX) purely for
+  // display before auth resolves — the server independently re-derives and
+  // verifies start_param from the signed initData, so this value is never trusted.
+  const startParamRaw = tg.initDataUnsafe?.start_param || new URLSearchParams(window.location.search).get('ref');
+
+  function initAuth() {
+    fetch('/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: rawInitData })
+    })
+      .then(res => {
+        if (!res.ok) throw new Error('auth failed: ' + res.status);
+        return res.json();
+      })
+      .then(data => {
+        authReady = true;
+        applyServerState(data);
+      })
+      .catch(err => {
+        console.error('Auth error:', err);
+        showToast("Couldn't connect to server — reopen the app from Telegram");
+      });
   }
 
   // Monetag Config
@@ -943,8 +964,8 @@
   }
 
   // Initialize UI Text
-  window.onload = () => {
-    document.getElementById('inviteLinkText').textContent = myInviteLink;
+  function refreshAllUI() {
+    document.getElementById('inviteLinkText').textContent = userId ? myInviteLink() : 'Loading…';
     document.getElementById('balance').textContent = balance.toFixed(2);
     document.getElementById('totalEarned').textContent = totalEarned.toFixed(2);
     document.getElementById('totalWatched').textContent = totalWatched;
@@ -955,6 +976,12 @@
     updateAvailableHint();
     renderHistory();
     checkDailyLimit();
+  }
+
+  window.onload = () => {
+    loadCache();       // instant paint from last-known values
+    refreshAllUI();
+    initAuth();         // then verify with server and correct if needed
   };
 
   function updateClock(){
@@ -1077,91 +1104,76 @@
   }
 
   function rewardUser(){
-    balance += REWARD;
-    totalEarned += REWARD;
-    totalWatched += 1;
-    watchedToday += 1;
-    saveData();
-
-    document.getElementById('balance').textContent = balance.toFixed(2);
-    document.getElementById('totalEarned').textContent = totalEarned.toFixed(2);
-    document.getElementById('totalWatched').textContent = totalWatched;
-    document.getElementById('watchedToday').textContent = watchedToday;
-    
-    updateJarFill();
-    updateAvailableHint();
-    
-    // If watchedToday reaches 3, notify server to check and credit referral bonuses
-    if(watchedToday === 3) {
-      fetch('/api/complete-ads', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refereeId: userId })
+    // The server is the only source of truth for the reward — it validates
+    // initData, enforces the daily cap, and credits any referral bonus
+    // atomically. We just show whatever it tells us.
+    fetch('/api/watch-ad', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: rawInitData })
+    })
+      .then(res => {
+        if (!res.ok) return res.json().then(e => Promise.reject(e));
+        return res.json();
       })
-      .then(res => res.json())
       .then(data => {
-        if(data.rewarded) {
-          showToast("🎉 Referral bonus unlocked! +$0.50 added");
+        applyServerState(data);
+
+        if (data.rewarded) {
+          showToast("🎉 Referral bonus unlocked for your inviter!");
         }
+
+        const btn = document.getElementById('watchBtn');
+        watching = false;
+        if(!checkDailyLimit()){
+          btn.disabled = false;
+          btn.textContent = '▶';
+          document.getElementById('statusText').textContent = "Jar's open — ready when you are";
+        }
+        showToast(`+$${REWARD.toFixed(2)} dropped in your jar`);
+        setTimeout(()=>{ document.getElementById('progressFill').style.width = '0%'; }, 900);
       })
-      .catch(err => console.error("Referral completion error:", err));
-    }
-
-    const btn = document.getElementById('watchBtn');
-    watching = false;
-    
-    if(!checkDailyLimit()){
-      btn.disabled = false;
-      btn.textContent = '▶';
-      document.getElementById('statusText').textContent = "Jar's open — ready when you are";
-    }
-
-    showToast(`+$${REWARD.toFixed(2)} dropped in your jar`);
-    setTimeout(()=>{ document.getElementById('progressFill').style.width = '0%'; }, 900);
+      .catch(err => {
+        console.error('Reward error:', err);
+        watching = false;
+        const btn = document.getElementById('watchBtn');
+        btn.disabled = false;
+        btn.textContent = '▶';
+        document.getElementById('progressFill').style.width = '0%';
+        document.getElementById('statusText').textContent = "Couldn't reach server — try again";
+        showToast(err?.error || "Couldn't record that ad — try again");
+      });
   }
 
-  // Periodically sync balances and invite stats from server
+  // Periodically re-sync from the server (e.g. picks up a referral bonus
+  // credited because of someone else's activity, without needing a reload).
   setInterval(() => {
-    fetch(`/api/stats/${userId}`)
-      .then(res => res.json())
-      .then(data => {
-        let updated = false;
-        if (data.balance !== undefined && data.balance !== balance) {
-          balance = data.balance;
-          document.getElementById('balance').textContent = balance.toFixed(2);
-          updateJarFill();
-          updateAvailableHint();
-          updated = true;
-        }
-        if (data.inviteCount !== undefined && data.inviteCount !== inviteCount) {
-          inviteCount = data.inviteCount;
-          inviteEarned = data.inviteEarned;
-          document.getElementById('inviteCount').textContent = inviteCount;
-          document.getElementById('inviteEarned').textContent = '$' + inviteEarned.toFixed(2);
-          updated = true;
-        }
-        if (updated) {
-          saveData();
-        }
-      })
-      .catch(err => {});
-  }, 3000);
+    if (!authReady) return;
+    fetch('/api/stats', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: rawInitData })
+    })
+      .then(res => res.ok ? res.json() : Promise.reject())
+      .then(data => applyServerState(data))
+      .catch(() => {});
+  }, 5000);
 
   /* ---------- invite ---------- */
   function copyLink(){
     if(navigator.clipboard){
-      navigator.clipboard.writeText(myInviteLink).then(()=> showToast('Link copied!')).catch(()=> showToast('Link: '+myInviteLink));
-    } else { showToast('Link: '+myInviteLink); }
+      navigator.clipboard.writeText(myInviteLink()).then(()=> showToast('Link copied!')).catch(()=> showToast('Link: '+myInviteLink()));
+    } else { showToast('Link: '+myInviteLink()); }
   }
   
   function shareLink(platform){
     if (tg.openTelegramLink) {
-      tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(myInviteLink)}&text=${encodeURIComponent('Watch ads and earn cash! Join Jarly with my link:')}`);
+      tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(myInviteLink())}&text=${encodeURIComponent('Watch ads and earn cash! Join Jarly with my link:')}`);
     } else if (navigator.share) {
       navigator.share({
         title: 'Join Jarly',
         text: 'Watch ads and earn cash! Use my link to join:',
-        url: myInviteLink
+        url: myInviteLink()
       }).catch(console.error);
     } else {
       copyLink();
@@ -1264,21 +1276,31 @@
     if(currentMethod === 'bank'){ const acct = document.getElementById('bankAccount').value.trim(); destination = 'A/C ****' + acct.slice(-4); methodLabel = 'Bank transfer'; methodIcon = '🏦'; }
     if(currentMethod === 'usdt'){ const addr = document.getElementById('usdtAddress').value.trim(); destination = addr.slice(0,6) + '...' + addr.slice(-4); methodLabel = 'USDT TRC20'; methodIcon = '💵'; }
 
-    balance -= amountVal;
-    document.getElementById('balance').textContent = balance.toFixed(2);
-    updateJarFill();
-    updateAvailableHint();
+    fetch('/api/withdraw', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: rawInitData, amount: amountVal, method: currentMethod, destination })
+    })
+      .then(res => {
+        if (!res.ok) return res.json().then(e => Promise.reject(e));
+        return res.json();
+      })
+      .then(data => {
+        applyServerState(data);
 
-    withdrawalHistory.unshift({
-      amount: amountVal, method: methodLabel, icon: methodIcon, detail: destination, date: new Date(), status: 'Pending'
-    });
-    
-    saveData();
-    renderHistory();
+        withdrawalHistory.unshift({
+          amount: amountVal, method: methodLabel, icon: methodIcon, detail: destination, date: new Date(), status: 'Pending'
+        });
+        saveHistory();
+        renderHistory();
 
-    document.getElementById('withdrawAmount').value = '';
-    renderMethodFields(currentMethod);
-    showToast(`Withdrawal of $${amountVal.toFixed(2)} requested!`);
+        document.getElementById('withdrawAmount').value = '';
+        renderMethodFields(currentMethod);
+        showToast(`Withdrawal of $${amountVal.toFixed(2)} requested!`);
+      })
+      .catch(err => {
+        showToast(err?.error || "Withdrawal failed — try again");
+      });
   }
 
   function renderHistory(){
