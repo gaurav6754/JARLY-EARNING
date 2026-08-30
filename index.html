@@ -869,7 +869,6 @@
   const REWARD = 0.15;
   const MIN_WITHDRAW = 15;
   const DAILY_LIMIT = 3;
-  const REF_BONUS = 0.50;
 
   // Telegram WebApp Integration & Unique Database Keys
   const tg = window.Telegram.WebApp;
@@ -1121,22 +1120,32 @@
     setTimeout(()=>{ document.getElementById('progressFill').style.width = '0%'; }, 900);
   }
 
-  // Periodically sync balances from Heroku backend server
+  // Periodically sync balances and invite stats from server
   setInterval(() => {
-    fetch(`/api/balance/${userId}`)
+    fetch(`/api/stats/${userId}`)
       .then(res => res.json())
       .then(data => {
-        if (data.balance && data.balance > balance) {
+        let updated = false;
+        if (data.balance !== undefined && data.balance !== balance) {
           balance = data.balance;
-          totalEarned += (data.balance - balance);
-          saveData();
           document.getElementById('balance').textContent = balance.toFixed(2);
           updateJarFill();
           updateAvailableHint();
+          updated = true;
+        }
+        if (data.inviteCount !== undefined && data.inviteCount !== inviteCount) {
+          inviteCount = data.inviteCount;
+          inviteEarned = data.inviteEarned;
+          document.getElementById('inviteCount').textContent = inviteCount;
+          document.getElementById('inviteEarned').textContent = '$' + inviteEarned.toFixed(2);
+          updated = true;
+        }
+        if (updated) {
+          saveData();
         }
       })
       .catch(err => {});
-  }, 4000);
+  }, 3000);
 
   /* ---------- invite ---------- */
   function copyLink(){
@@ -1303,3 +1312,4 @@
 </script>
 </body>
 </html>
+
