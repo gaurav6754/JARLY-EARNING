@@ -982,6 +982,17 @@
     loadCache();       // instant paint from last-known values
     refreshAllUI();
     initAuth();         // then verify with server and correct if needed
+
+    // TEMPORARY DEBUG: shows whether a referral code was picked up on this
+    // launch, so you can visually confirm it on the referred phone. Remove
+    // this block once referrals are confirmed working.
+    setTimeout(() => {
+      if (startParamRaw) {
+        showToast('DEBUG: referral code detected → ' + startParamRaw);
+      } else {
+        showToast('DEBUG: no referral code detected on this launch');
+      }
+    }, 1200);
   };
 
   function updateClock(){
