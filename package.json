@@ -1,0 +1,12 @@
+{
+  "name": "jarly-earning-app",
+  "version": "1.0.0",
+  "description": "Jarly Earning Telegram Mini App",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
