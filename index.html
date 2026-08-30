@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Jarly - Earn</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src='//libtl.com/sdk.js' data-zone='11689642' data-sdk='show_11689642'></script>
 <style>
   :root{
@@ -275,7 +276,18 @@
     transform:translateY(4px);
     box-shadow:0 2px 0 #c99a2f, 0 4px 10px rgba(0,0,0,0.15);
   }
-  .coin-btn:disabled{opacity:0.5;cursor:default;}
+  .coin-btn:disabled{
+    background: #e0e0e0;
+    box-shadow:0 6px 0 #b3b3b3;
+    color: #888;
+    cursor:default;
+    transform:none;
+  }
+  .coin-btn.maxed{
+    background: var(--mint-2);
+    box-shadow:0 6px 0 #a9dccb;
+    color: var(--teal-ink);
+  }
   .coin-info{flex:1;}
   .coin-info .t{font-weight:800;font-size:16px;margin:0 0 2px;}
   .coin-info .s{font-size:12.5px;color:#6c9b91;margin:0;}
@@ -385,10 +397,13 @@
   }
   .code-row span{
     flex:1;
-    font-weight:800;
-    letter-spacing:2px;
-    font-size:16px;
+    font-weight:600;
+    font-size:13px;
     text-align:left;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    color:var(--teal-ink);
   }
   .copy-btn{
     width:38px;height:38px;
@@ -744,14 +759,14 @@
         <div class="ticket-head">
           <span class="eyebrow">Quick earn</span>
           <h2>Drop a coin, watch an ad</h2>
-          <p>Finish one short video and <b>$0.15</b> lands straight in your jar.</p>
+          <p>Finish one short video and <b>$0.15</b> lands straight in your jar. (Limit 3 per day).</p>
         </div>
         <div class="ticket-perf"></div>
         <div class="coin-launch">
           <button class="coin-btn" id="watchBtn" onclick="watchAd()">▶</button>
           <div class="coin-info">
-            <p class="t">Tap to watch</p>
-            <p class="s">Takes about 15 seconds</p>
+            <p class="t" id="watchTitle">Tap to watch</p>
+            <p class="s" id="watchSub">Takes about 15 seconds</p>
           </div>
           <div class="reward-tag">+$0.15</div>
         </div>
@@ -759,11 +774,11 @@
           <div class="track"><div class="track-fill" id="progressFill"></div></div>
           <div class="track-label">
             <span>Today's coins</span>
-            <span><span id="watchedToday">0</span> watched</span>
+            <span><span id="watchedToday">0</span> / 3 watched</span>
           </div>
         </div>
         <div class="status-strip">
-          <span class="pulse"></span>
+          <span class="pulse" id="statusPulse"></span>
           <span id="statusText">Jar's open — ready when you are</span>
         </div>
       </div>
@@ -784,15 +799,15 @@
     <div class="view" id="view-invite">
       <div class="invite-card">
         <h2>Invite friends, earn together</h2>
-        <p>You both get <b>$0.50</b> when they join and watch their first ad.</p>
+        <p>You both get <b>$0.50</b> when they join through your link and watch 3 ads.</p>
         <div class="code-row">
-          <span id="inviteCode">JARLY-XXXX</span>
-          <button class="copy-btn" onclick="copyCode()">📋</button>
+          <span id="inviteLinkText">https://...</span>
+          <button class="copy-btn" onclick="copyLink()">📋</button>
         </div>
         <div class="share-row">
-          <button class="share-btn" onclick="shareVia('WhatsApp')"><span class="n">💬</span>WhatsApp</button>
-          <button class="share-btn" onclick="shareVia('Messages')"><span class="n">✉️</span>Messages</button>
-          <button class="share-btn" onclick="shareVia('More')"><span class="n">🔗</span>More</button>
+          <button class="share-btn" onclick="shareLink('WhatsApp')"><span class="n">💬</span>WhatsApp</button>
+          <button class="share-btn" onclick="shareLink('Messages')"><span class="n">✉️</span>Messages</button>
+          <button class="share-btn" onclick="shareLink('More')"><span class="n">🔗</span>More</button>
         </div>
         <div class="invite-stat">
           <div><div class="v" id="inviteCount">0</div><div class="l">INVITED</div></div>
@@ -853,61 +868,79 @@
 <script>
   const REWARD = 0.15;
   const MIN_WITHDRAW = 15;
+  const DAILY_LIMIT = 3;
 
-  // Local Storage Data Initialization
-  let balance = parseFloat(localStorage.getItem('jarly_balance')) || 0.00;
-  let totalEarned = parseFloat(localStorage.getItem('jarly_totalEarned')) || 0.00;
-  let totalWatched = parseInt(localStorage.getItem('jarly_totalWatched')) || 0;
-  let watchedToday = parseInt(localStorage.getItem('jarly_watchedToday')) || 0;
-  let inviteCount = parseInt(localStorage.getItem('jarly_inviteCount')) || 0;
-  let inviteEarned = parseFloat(localStorage.getItem('jarly_inviteEarned')) || 0.00;
+  // Telegram WebApp Integration & Unique Database Keys
+  const tg = window.Telegram.WebApp;
+  tg.ready();
+
+  const telegramUser = tg.initDataUnsafe?.user;
+  // Use numeric Telegram ID if available, otherwise generate a secure browser fallback
+  const userId = telegramUser ? telegramUser.id : ('guest_' + Math.random().toString(36).substring(2, 8));
+  
+  // Unique storage prefix based strictly on the unique numeric user ID
+  const STORAGE_PREFIX = `jarly_user_${userId}_`;
+
+  // Local Storage Data scoped to unique Telegram ID
+  let balance = parseFloat(localStorage.getItem(STORAGE_PREFIX + 'balance')) || 0.00;
+  let totalEarned = parseFloat(localStorage.getItem(STORAGE_PREFIX + 'totalEarned')) || 0.00;
+  let totalWatched = parseInt(localStorage.getItem(STORAGE_PREFIX + 'totalWatched')) || 0;
+  let inviteCount = parseInt(localStorage.getItem(STORAGE_PREFIX + 'inviteCount')) || 0;
+  let inviteEarned = parseFloat(localStorage.getItem(STORAGE_PREFIX + 'inviteEarned')) || 0.00;
   let watching = false;
 
-  // Retrieve or generate unique invite ID
-  let myInviteCode = localStorage.getItem('jarly_inviteCode');
-  if(!myInviteCode){
-    myInviteCode = 'JARLY-' + Math.random().toString(36).substring(2, 6).toUpperCase();
-    localStorage.setItem('jarly_inviteCode', myInviteCode);
+  // Daily reset check
+  const todayStr = new Date().toDateString();
+  let storedDate = localStorage.getItem(STORAGE_PREFIX + 'date');
+  let watchedToday = parseInt(localStorage.getItem(STORAGE_PREFIX + 'watchedToday')) || 0;
+
+  if (storedDate !== todayStr) {
+    watchedToday = 0;
+    localStorage.setItem(STORAGE_PREFIX + 'date', todayStr);
+    localStorage.setItem(STORAGE_PREFIX + 'watchedToday', watchedToday);
+  }
+
+  // Generate Unique Referral Link using user's Telegram ID
+  const myInviteLink = `https://t.me/Jarly66_bot?start=ref_${userId}`;
+
+  // Handle incoming referrals from Telegram start_param or fallback url search params
+  const startParam = tg.initDataUnsafe?.start_param;
+  const urlParams = new URLSearchParams(window.location.search);
+  const refCode = startParam || urlParams.get('ref');
+
+  if (refCode && refCode !== String(userId) && !localStorage.getItem(STORAGE_PREFIX + 'referredBy')) {
+    localStorage.setItem(STORAGE_PREFIX + 'referredBy', refCode);
+    localStorage.setItem(STORAGE_PREFIX + 'refAdsWatched', 0);
   }
 
   // Parse withdrawal history
   let withdrawalHistory = [];
   try {
-    const savedHistory = localStorage.getItem('jarly_history');
+    const savedHistory = localStorage.getItem(STORAGE_PREFIX + 'history');
     if (savedHistory) {
       withdrawalHistory = JSON.parse(savedHistory);
       withdrawalHistory.forEach(item => item.date = new Date(item.date));
     }
   } catch(e) { console.error("Error loading history"); }
 
-  // Save changes back to local storage
   function saveData() {
-    localStorage.setItem('jarly_balance', balance.toFixed(2));
-    localStorage.setItem('jarly_totalEarned', totalEarned.toFixed(2));
-    localStorage.setItem('jarly_totalWatched', totalWatched);
-    localStorage.setItem('jarly_watchedToday', watchedToday);
-    localStorage.setItem('jarly_inviteCount', inviteCount);
-    localStorage.setItem('jarly_inviteEarned', inviteEarned.toFixed(2));
-    localStorage.setItem('jarly_history', JSON.stringify(withdrawalHistory));
+    localStorage.setItem(STORAGE_PREFIX + 'balance', balance.toFixed(2));
+    localStorage.setItem(STORAGE_PREFIX + 'totalEarned', totalEarned.toFixed(2));
+    localStorage.setItem(STORAGE_PREFIX + 'totalWatched', totalWatched);
+    localStorage.setItem(STORAGE_PREFIX + 'watchedToday', watchedToday);
+    localStorage.setItem(STORAGE_PREFIX + 'inviteCount', inviteCount);
+    localStorage.setItem(STORAGE_PREFIX + 'inviteEarned', inviteEarned.toFixed(2));
+    localStorage.setItem(STORAGE_PREFIX + 'history', JSON.stringify(withdrawalHistory));
   }
 
-  // Set Monetag Config: 3 impressions max per 24 hours, spaced by 120 seconds
+  // Monetag Config
   if (typeof window.show_11689642 === 'function') {
-    window.show_11689642({
-      type: 'inApp',
-      inAppSettings: {
-        frequency: 3,
-        capping: 24,
-        interval: 120,
-        timeout: 5,
-        everyPage: false
-      }
-    });
+    window.show_11689642({ type: 'inApp', inAppSettings: { frequency: 3, capping: 24, interval: 120, timeout: 5, everyPage: false } });
   }
 
-  // Initialize UI Text on Load
+  // Initialize UI Text
   window.onload = () => {
-    document.getElementById('inviteCode').textContent = myInviteCode;
+    document.getElementById('inviteLinkText').textContent = myInviteLink;
     document.getElementById('balance').textContent = balance.toFixed(2);
     document.getElementById('totalEarned').textContent = totalEarned.toFixed(2);
     document.getElementById('totalWatched').textContent = totalWatched;
@@ -917,6 +950,7 @@
     updateJarFill();
     updateAvailableHint();
     renderHistory();
+    checkDailyLimit();
   };
 
   function updateClock(){
@@ -925,8 +959,7 @@
     const m = now.getMinutes().toString().padStart(2,'0');
     document.getElementById('clock').textContent = h+':'+m;
   }
-  updateClock();
-  setInterval(updateClock, 30000);
+  updateClock(); setInterval(updateClock, 30000);
 
   function showToast(msg){
     const toast = document.getElementById('toast');
@@ -945,11 +978,10 @@
     document.getElementById('navEarn').classList.toggle('active', name==='earn');
     document.getElementById('navInvite').classList.toggle('active', name==='invite');
     document.getElementById('navCashout').classList.toggle('active', name==='cashout');
-    closeMenu();
-    window.scrollTo({top:0, behavior:'smooth'});
+    closeMenu(); window.scrollTo({top:0, behavior:'smooth'});
   }
 
-  /* ---------- menu dropdown ---------- */
+  /* ---------- menu & sheets ---------- */
   function toggleMenu(){
     const menu = document.getElementById('menuDropdown');
     const chip = document.getElementById('menuChip');
@@ -968,7 +1000,6 @@
     if(menu.classList.contains('show') && !menu.contains(e.target) && e.target!==chip){ closeMenu(); }
   });
 
-  /* ---------- support / profile sheets ---------- */
   function openSheet(title, body){
     document.getElementById('sheetTitle').textContent = title;
     document.getElementById('sheetBody').textContent = body;
@@ -976,20 +1007,37 @@
   }
   function closeSheet(){ document.getElementById('overlay').classList.remove('show'); }
   function openSupport(){ openSheet('Support', "We're here to help. Chat replies usually arrive within a few minutes during daytime hours."); }
-  function openProfile(){ openSheet('Your profile', `Guest account · Wallet ID ${myInviteCode}. Sign in to sync your jar across devices.`); }
+  function openProfile(){ 
+    const userName = telegramUser ? (telegramUser.first_name + (telegramUser.last_name ? ' ' + telegramUser.last_name : '')) : 'Guest User';
+    openSheet('Your profile', `${userName} · Telegram ID: ${userId}`); 
+  }
 
   /* ---------- earn / watch ad ---------- */
   function updateJarFill(){
     const pct = Math.min(balance / MIN_WITHDRAW, 1);
     const jar = document.getElementById('jarFill');
-    const maxH = 70;
-    const h = maxH * pct;
-    jar.setAttribute('y', 90 - h);
-    jar.setAttribute('height', h);
+    jar.setAttribute('y', 90 - (70 * pct));
+    jar.setAttribute('height', 70 * pct);
+  }
+
+  function checkDailyLimit() {
+    const btn = document.getElementById('watchBtn');
+    if(watchedToday >= DAILY_LIMIT) {
+      btn.disabled = true;
+      btn.textContent = '✔️';
+      btn.classList.add('maxed');
+      document.getElementById('watchTitle').textContent = "Daily limit reached";
+      document.getElementById('watchSub').textContent = "Come back tomorrow for more";
+      document.getElementById('statusText').textContent = "All caught up for today!";
+      document.getElementById('statusPulse').style.background = 'var(--teal-mid)';
+      document.getElementById('statusPulse').style.boxShadow = 'none';
+      return true;
+    }
+    return false;
   }
 
   function watchAd(){
-    if(watching) return;
+    if(watching || checkDailyLimit()) return;
     watching = true;
     const btn = document.getElementById('watchBtn');
     const fill = document.getElementById('progressFill');
@@ -1035,30 +1083,56 @@
     document.getElementById('totalEarned').textContent = totalEarned.toFixed(2);
     document.getElementById('totalWatched').textContent = totalWatched;
     document.getElementById('watchedToday').textContent = watchedToday;
-    document.getElementById('statusText').textContent = "Jar's open — ready when you are";
+    
     updateJarFill();
     updateAvailableHint();
+    
+    // Check if this user was referred by someone else
+    let referredBy = localStorage.getItem(STORAGE_PREFIX + 'referredBy');
+    if (referredBy) {
+      let refAds = parseInt(localStorage.getItem(STORAGE_PREFIX + 'refAdsWatched')) || 0;
+      if (refAds < 3) {
+        refAds++;
+        localStorage.setItem(STORAGE_PREFIX + 'refAdsWatched', refAds);
+        if (refAds === 3) {
+          console.log(`Referrer ${referredBy} target met via Telegram user ${userId}!`);
+        }
+      }
+    }
 
     const btn = document.getElementById('watchBtn');
-    btn.disabled = false;
-    btn.textContent = '▶';
     watching = false;
+    
+    if(!checkDailyLimit()){
+      btn.disabled = false;
+      btn.textContent = '▶';
+      document.getElementById('statusText').textContent = "Jar's open — ready when you are";
+    }
 
     showToast(`+$${REWARD.toFixed(2)} dropped in your jar`);
     setTimeout(()=>{ document.getElementById('progressFill').style.width = '0%'; }, 900);
   }
 
   /* ---------- invite ---------- */
-  function copyCode(){
-    const code = document.getElementById('inviteCode').textContent;
+  function copyLink(){
     if(navigator.clipboard){
-      navigator.clipboard.writeText(code).then(()=> showToast('Invite code copied')).catch(()=> showToast('Code: '+code));
-    } else { showToast('Code: '+code); }
+      navigator.clipboard.writeText(myInviteLink).then(()=> showToast('Link copied!')).catch(()=> showToast('Link: '+myInviteLink));
+    } else { showToast('Link: '+myInviteLink); }
   }
   
-  function shareVia(platform){
-    showToast(`Opening ${platform}...`);
-    // Removed fake setTimeout referral reward. True user attribution requires a backend server.
+  function shareLink(platform){
+    if (tg.openTelegramLink) {
+      tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(myInviteLink)}&text=${encodeURIComponent('Watch ads and earn cash! Join Jarly with my link:')}`);
+    } else if (navigator.share) {
+      navigator.share({
+        title: 'Join Jarly',
+        text: 'Watch ads and earn cash! Use my link to join:',
+        url: myInviteLink
+      }).catch(console.error);
+    } else {
+      copyLink();
+      showToast(`Link copied. Paste it in ${platform}`);
+    }
   }
 
   /* ---------- cash out ---------- */
@@ -1204,3 +1278,4 @@
 </script>
 </body>
 </html>
+
