@@ -879,7 +879,6 @@
   const userId = telegramUser ? telegramUser.id : ('guest_' + Math.random().toString(36).substring(2, 8));
   
   const STORAGE_PREFIX = `jarly_user_${userId}_`;
-  const cloud = tg.CloudStorage;
 
   // Local state variables
   let balance = parseFloat(localStorage.getItem(STORAGE_PREFIX + 'balance')) || 0.00;
@@ -909,13 +908,14 @@
   const refCode = startParam || urlParams.get('ref');
 
   if (refCode && refCode !== String(userId)) {
-    cloud.getItem('referredBy', (err, existingRef) => {
-      if (!err && !existingRef) {
-        cloud.setItem('referredBy', refCode, () => {
-          cloud.setItem('refAdsWatched', '0');
-        });
-      }
-    });
+    fetch('/api/referral', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ referrerId: refCode, refereeId: userId })
+    })
+    .then(res => res.json())
+    .then(data => console.log(data.message))
+    .catch(err => console.error("Referral registration error:", err));
   }
 
   // Parse withdrawal history
@@ -1092,8 +1092,21 @@
     updateJarFill();
     updateAvailableHint();
     
-    // Check and update cloud-based referral progress for invitees
-    checkAndCreditReferralProgress();
+    // If watchedToday reaches 3, notify server to check and credit referral bonuses
+    if(watchedToday === 3) {
+      fetch('/api/complete-ads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refereeId: userId })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if(data.rewarded) {
+          showToast("🎉 Referral bonus unlocked! +$0.50 added");
+        }
+      })
+      .catch(err => console.error("Referral completion error:", err));
+    }
 
     const btn = document.getElementById('watchBtn');
     watching = false;
@@ -1108,85 +1121,22 @@
     setTimeout(()=>{ document.getElementById('progressFill').style.width = '0%'; }, 900);
   }
 
-  function checkAndCreditReferralProgress() {
-    cloud.getItem('referredBy', (err, referrerId) => {
-      if (!err && referrerId) {
-        cloud.getItem('refAdsWatched', (err, val) => {
-          let refAds = parseInt(val) || 0;
-          if (refAds < 3) {
-            refAds++;
-            cloud.setItem('refAdsWatched', refAds.toString(), () => {
-              if (refAds === 3) {
-                // Credit referee ($0.50 bonus) locally and cloud
-                balance += REF_BONUS;
-                totalEarned += REF_BONUS;
-                saveData();
-                document.getElementById('balance').textContent = balance.toFixed(2);
-                document.getElementById('totalEarned').textContent = totalEarned.toFixed(2);
-                updateJarFill();
-                updateAvailableHint();
-
-                // Credit referrer ($0.50 bonus) via CloudStorage keys
-                cloud.getItem(`user_${referrerId}_balance`, (err, currentBal) => {
-                  let refBal = parseFloat(currentBal) || 0.00;
-                  cloud.setItem(`user_${referrerId}_balance`, (refBal + REF_BONUS).toFixed(2));
-                });
-                cloud.getItem(`user_${referrerId}_earned`, (err, currentEarned) => {
-                  let refEarned = parseFloat(currentEarned) || 0.00;
-                  cloud.setItem(`user_${referrerId}_earned`, (refEarned + REF_BONUS).toFixed(2));
-                });
-                cloud.getItem(`user_${referrerId}_invites`, (err, currentInvites) => {
-                  let refInvites = parseInt(currentInvites) || 0;
-                  cloud.setItem(`user_${referrerId}_invites`, (refInvites + 1).toString());
-                });
-
-                showToast(`🎉 Referral bonus unlocked! +$0.50 added`);
-                cloud.removeItem('referredBy');
-              }
-            });
-          }
-        });
-      }
-    });
-  }
-
-  // Periodically check if referrer stats updated from cloud storage
+  // Periodically sync balances from Heroku backend server
   setInterval(() => {
-    cloud.getItem(`user_${userId}_balance`, (err, cloudBal) => {
-      if (!err && cloudBal) {
-        let newBal = parseFloat(cloudBal);
-        if (newBal > balance) {
-          balance = newBal;
+    fetch(`/api/balance/${userId}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.balance && data.balance > balance) {
+          balance = data.balance;
+          totalEarned += (data.balance - balance);
           saveData();
           document.getElementById('balance').textContent = balance.toFixed(2);
           updateJarFill();
           updateAvailableHint();
         }
-      }
-    });
-    cloud.getItem(`user_${userId}_earned`, (err, cloudEarned) => {
-      if (!err && cloudEarned) {
-        let newEarned = parseFloat(cloudEarned);
-        if (newEarned > totalEarned) {
-          totalEarned = newEarned;
-          saveData();
-          document.getElementById('totalEarned').textContent = totalEarned.toFixed(2);
-        }
-      }
-    });
-    cloud.getItem(`user_${userId}_invites`, (err, cloudInvites) => {
-      if (!err && cloudInvites) {
-        let newInvites = parseInt(cloudInvites);
-        if (newInvites > inviteCount) {
-          inviteCount = newInvites;
-          inviteEarned = inviteCount * REF_BONUS;
-          saveData();
-          document.getElementById('inviteCount').textContent = inviteCount;
-          document.getElementById('inviteEarned').textContent = '$' + inviteEarned.toFixed(2);
-        }
-      }
-    });
-  }, 5000);
+      })
+      .catch(err => {});
+  }, 4000);
 
   /* ---------- invite ---------- */
   function copyLink(){
