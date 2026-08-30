@@ -147,6 +147,7 @@ function requireTelegramAuth(req, res, next) {
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.static('public')); // serves public/index.html at "/"
 
 // 1) Auto-bind: called once when the mini app opens.
 //    Creates the user row if new, updates their profile info,
