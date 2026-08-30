@@ -4,14 +4,17 @@ const app = express();
 
 app.use(express.json());
 
-// In-memory storage for balances and referrals
-let balances = {};  // { userId: balance }
-let referrals = {}; // { refereeId: referrerId }
+// In-memory storage
+let balances = {};        // { userId: balance }
+let referrals = {};       // { refereeId: referrerId }
+let inviteCounts = {};    // { referrerId: count }
+let inviteEarnings = {};  // { referrerId: earnings }
 
-// --- API ROUTES (Must be before static & wildcard routes) ---
+// --- API ROUTES ---
 
 app.post('/api/referral', (req, res) => {
-  const { referrerId, refereeId } = req.get ? req.body : req.query;
+  const { referrerId, refereeId } = req.body;
+  // Fixed bug: compare refereeId to referrerId
   if (referrerId && refereeId && refereeId !== referrerId && !referrals[refereeId]) {
     referrals[refereeId] = referrerId;
     return res.json({ success: true, message: "Referral registered" });
@@ -26,29 +29,30 @@ app.post('/api/complete-ads', (req, res) => {
   if (referrerId) {
     balances[referrerId] = (balances[referrerId] || 0) + 0.50;
     balances[refereeId] = (balances[refereeId] || 0) + 0.50;
-    delete referrals[refereeId]; // Ensure payout happens only once
+    
+    inviteCounts[referrerId] = (inviteCounts[referrerId] || 0) + 1;
+    inviteEarnings[referrerId] = (inviteEarnings[referrerId] || 0) + 0.50;
+
+    delete referrals[refereeId]; // Payout only once per referral
     return res.json({ success: true, rewarded: true });
   }
   res.json({ success: false, message: "No active referrer found" });
 });
 
-app.get('/api/balance/:userId', (req, res) => {
+app.get('/api/stats/:userId', (req, res) => {
   const userId = req.params.userId;
-  res.json({ balance: balances[userId] || 0 });
+  res.json({
+    balance: balances[userId] || 0,
+    inviteCount: inviteCounts[userId] || 0,
+    inviteEarned: inviteEarnings[userId] || 0
+  });
 });
 
-// --- STATIC & FRONTEND ROUTING ---
-
-// Serve static files from current directory
+// --- STATIC FILES ---
 app.use(express.static(path.join(__dirname)));
-
-// Serve index.html on root access (Must be at the very end)
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Bind to Heroku's assigned port
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
