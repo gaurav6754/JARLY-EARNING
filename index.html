@@ -133,7 +133,7 @@
   .view.active{display:block;animation:fadein .2s ease;}
   @keyframes fadein{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
 
-  /* HERO: coin jar (shown on all views) */
+  /* HERO: coin jar */
   .jar-hero{
     background:var(--teal-ink);
     border-radius:26px;
@@ -744,7 +744,7 @@
         <div class="ticket-head">
           <span class="eyebrow">Quick earn</span>
           <h2>Drop a coin, watch an ad</h2>
-          <p>Finish one short video and <b>$0.30</b> lands straight in your jar.</p>
+          <p>Finish one short video and <b>$0.15</b> lands straight in your jar.</p>
         </div>
         <div class="ticket-perf"></div>
         <div class="coin-launch">
@@ -753,7 +753,7 @@
             <p class="t">Tap to watch</p>
             <p class="s">Takes about 15 seconds</p>
           </div>
-          <div class="reward-tag">+$0.30</div>
+          <div class="reward-tag">+$0.15</div>
         </div>
         <div class="track-wrap">
           <div class="track"><div class="track-fill" id="progressFill"></div></div>
@@ -786,7 +786,7 @@
         <h2>Invite friends, earn together</h2>
         <p>You both get <b>$0.50</b> when they join and watch their first ad.</p>
         <div class="code-row">
-          <span id="inviteCode">JARLY-7C2K</span>
+          <span id="inviteCode">JARLY-XXXX</span>
           <button class="copy-btn" onclick="copyCode()">📋</button>
         </div>
         <div class="share-row">
@@ -805,7 +805,7 @@
     <div class="view" id="view-cashout">
       <div class="cashout-card">
         <h2>Cash out</h2>
-        <p>Choose a method. Minimum withdrawal is $20.00.</p>
+        <p>Choose a method. Minimum withdrawal is $15.00.</p>
         <div class="method-row">
           <div class="method-btn selected" id="methodPaypal" onclick="selectMethod('methodPaypal')"><span class="n">🅿️</span><span class="lbl">PayPal</span></div>
           <div class="method-btn" id="methodBank" onclick="selectMethod('methodBank')"><span class="n">🏦</span><span class="lbl">Bank</span></div>
@@ -814,8 +814,8 @@
         <div class="fields-wrap">
           <div class="field" id="f-withdrawAmount">
             <label>Amount to withdraw <span id="availableHint">(available $0.00)</span></label>
-            <input type="number" id="withdrawAmount" placeholder="Minimum $20.00" min="20" step="0.01">
-            <span class="field-error" id="amountError">Enter an amount between $20 and your balance</span>
+            <input type="number" id="withdrawAmount" placeholder="Minimum $15.00" min="15" step="0.01">
+            <span class="field-error" id="amountError">Enter an amount between $15 and your balance</span>
           </div>
         </div>
         <div class="fields-wrap" id="methodFields"></div>
@@ -838,7 +838,7 @@
     <button class="nav-item" id="navCashout" onclick="showView('cashout')"><div class="ic">💸</div>Cash out</button>
   </div>
 
-  <div class="toast" id="toast">+$0.30 dropped in your jar</div>
+  <div class="toast" id="toast">+$0.15 dropped in your jar</div>
 
   <div class="overlay" id="overlay">
     <div class="sheet">
@@ -851,32 +851,73 @@
 </div>
 
 <script>
-  const REWARD = 0.30;
-  let balance = 0.00;
-  let totalEarned = 0.00;
-  let totalWatched = 0;
-  let watchedToday = 0;
-  let watching = false;
-  let inviteCount = 0;
-  let inviteEarned = 0;
-  let withdrawalHistory = [];
+  const REWARD = 0.15;
+  const MIN_WITHDRAW = 15;
 
-  // In-App Interstitial: shows automatically in the background per Monetag's
-  // settings below, separate from the rewarded ad on the Watch button.
-  // 2 ads within 0.1hr (6 min), 30s apart, first one after a 5s delay,
-  // session resets on page nav (last digit 0 = keeps session across pages).
+  // Local Storage Data Initialization
+  let balance = parseFloat(localStorage.getItem('jarly_balance')) || 0.00;
+  let totalEarned = parseFloat(localStorage.getItem('jarly_totalEarned')) || 0.00;
+  let totalWatched = parseInt(localStorage.getItem('jarly_totalWatched')) || 0;
+  let watchedToday = parseInt(localStorage.getItem('jarly_watchedToday')) || 0;
+  let inviteCount = parseInt(localStorage.getItem('jarly_inviteCount')) || 0;
+  let inviteEarned = parseFloat(localStorage.getItem('jarly_inviteEarned')) || 0.00;
+  let watching = false;
+
+  // Retrieve or generate unique invite ID
+  let myInviteCode = localStorage.getItem('jarly_inviteCode');
+  if(!myInviteCode){
+    myInviteCode = 'JARLY-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+    localStorage.setItem('jarly_inviteCode', myInviteCode);
+  }
+
+  // Parse withdrawal history
+  let withdrawalHistory = [];
+  try {
+    const savedHistory = localStorage.getItem('jarly_history');
+    if (savedHistory) {
+      withdrawalHistory = JSON.parse(savedHistory);
+      withdrawalHistory.forEach(item => item.date = new Date(item.date));
+    }
+  } catch(e) { console.error("Error loading history"); }
+
+  // Save changes back to local storage
+  function saveData() {
+    localStorage.setItem('jarly_balance', balance.toFixed(2));
+    localStorage.setItem('jarly_totalEarned', totalEarned.toFixed(2));
+    localStorage.setItem('jarly_totalWatched', totalWatched);
+    localStorage.setItem('jarly_watchedToday', watchedToday);
+    localStorage.setItem('jarly_inviteCount', inviteCount);
+    localStorage.setItem('jarly_inviteEarned', inviteEarned.toFixed(2));
+    localStorage.setItem('jarly_history', JSON.stringify(withdrawalHistory));
+  }
+
+  // Set Monetag Config: 3 impressions max per 24 hours, spaced by 120 seconds
   if (typeof window.show_11689642 === 'function') {
     window.show_11689642({
       type: 'inApp',
       inAppSettings: {
-        frequency: 2,
-        capping: 0.1,
-        interval: 30,
+        frequency: 3,
+        capping: 24,
+        interval: 120,
         timeout: 5,
         everyPage: false
       }
     });
   }
+
+  // Initialize UI Text on Load
+  window.onload = () => {
+    document.getElementById('inviteCode').textContent = myInviteCode;
+    document.getElementById('balance').textContent = balance.toFixed(2);
+    document.getElementById('totalEarned').textContent = totalEarned.toFixed(2);
+    document.getElementById('totalWatched').textContent = totalWatched;
+    document.getElementById('watchedToday').textContent = watchedToday;
+    document.getElementById('inviteCount').textContent = inviteCount;
+    document.getElementById('inviteEarned').textContent = '$'+inviteEarned.toFixed(2);
+    updateJarFill();
+    updateAvailableHint();
+    renderHistory();
+  };
 
   function updateClock(){
     const now = new Date();
@@ -895,16 +936,12 @@
     window.__toastTimer = setTimeout(()=> toast.classList.remove('show'), 1800);
   }
 
-  function scrollTop(){
-    window.scrollTo({top:0, behavior:'smooth'});
-  }
+  function scrollTop(){ window.scrollTo({top:0, behavior:'smooth'}); }
 
   /* ---------- view switching ---------- */
   const views = ['earn','invite','cashout'];
   function showView(name){
-    views.forEach(v=>{
-      document.getElementById('view-'+v)?.classList.toggle('active', v===name);
-    });
+    views.forEach(v=>{ document.getElementById('view-'+v)?.classList.toggle('active', v===name); });
     document.getElementById('navEarn').classList.toggle('active', name==='earn');
     document.getElementById('navInvite').classList.toggle('active', name==='invite');
     document.getElementById('navCashout').classList.toggle('active', name==='cashout');
@@ -924,16 +961,11 @@
     document.getElementById('menuDropdown').classList.remove('show');
     document.getElementById('menuChip').classList.remove('open');
   }
-  function menuAction(msg){
-    closeMenu();
-    showToast(msg);
-  }
+  function menuAction(msg){ closeMenu(); showToast(msg); }
   document.addEventListener('click', (e)=>{
     const menu = document.getElementById('menuDropdown');
     const chip = document.getElementById('menuChip');
-    if(menu.classList.contains('show') && !menu.contains(e.target) && e.target!==chip){
-      closeMenu();
-    }
+    if(menu.classList.contains('show') && !menu.contains(e.target) && e.target!==chip){ closeMenu(); }
   });
 
   /* ---------- support / profile sheets ---------- */
@@ -942,26 +974,19 @@
     document.getElementById('sheetBody').textContent = body;
     document.getElementById('overlay').classList.add('show');
   }
-  function closeSheet(){
-    document.getElementById('overlay').classList.remove('show');
-  }
-  function openSupport(){
-    openSheet('Support', "We're here to help. Chat replies usually arrive within a few minutes during daytime hours.");
-  }
-  function openProfile(){
-    openSheet('Your profile', 'Guest account · Wallet ID 0000000. Sign in to sync your jar across devices.');
-  }
+  function closeSheet(){ document.getElementById('overlay').classList.remove('show'); }
+  function openSupport(){ openSheet('Support', "We're here to help. Chat replies usually arrive within a few minutes during daytime hours."); }
+  function openProfile(){ openSheet('Your profile', `Guest account · Wallet ID ${myInviteCode}. Sign in to sync your jar across devices.`); }
 
   /* ---------- earn / watch ad ---------- */
   function updateJarFill(){
-    const pct = Math.min(balance / 20, 1);
+    const pct = Math.min(balance / MIN_WITHDRAW, 1);
     const jar = document.getElementById('jarFill');
     const maxH = 70;
     const h = maxH * pct;
     jar.setAttribute('y', 90 - h);
     jar.setAttribute('height', h);
   }
-  updateJarFill();
 
   function watchAd(){
     if(watching) return;
@@ -972,14 +997,11 @@
     btn.textContent = '⏳';
     document.getElementById('statusText').textContent = "Playing your ad...";
 
-    // Real Monetag rewarded ad, when the SDK has loaded (data-sdk='show_11689642')
     if (typeof window.show_11689642 === 'function') {
       window.show_11689642().then(() => {
-        // viewer completed the ad — pay out
         fill.style.width = '100%';
         rewardUser();
       }).catch(() => {
-        // ad failed to load / was skipped — no reward
         fill.style.width = '0%';
         btn.disabled = false;
         btn.textContent = '▶';
@@ -990,7 +1012,7 @@
       return;
     }
 
-    // Fallback simulation for local preview (SDK not loaded / no network)
+    // Fallback simulation
     let progress = 0;
     const interval = setInterval(()=>{
       progress += 100/30;
@@ -1007,6 +1029,7 @@
     totalEarned += REWARD;
     totalWatched += 1;
     watchedToday += 1;
+    saveData();
 
     document.getElementById('balance').textContent = balance.toFixed(2);
     document.getElementById('totalEarned').textContent = totalEarned.toFixed(2);
@@ -1022,10 +1045,7 @@
     watching = false;
 
     showToast(`+$${REWARD.toFixed(2)} dropped in your jar`);
-
-    setTimeout(()=>{
-      document.getElementById('progressFill').style.width = '0%';
-    }, 900);
+    setTimeout(()=>{ document.getElementById('progressFill').style.width = '0%'; }, 900);
   }
 
   /* ---------- invite ---------- */
@@ -1033,26 +1053,12 @@
     const code = document.getElementById('inviteCode').textContent;
     if(navigator.clipboard){
       navigator.clipboard.writeText(code).then(()=> showToast('Invite code copied')).catch(()=> showToast('Code: '+code));
-    } else {
-      showToast('Code: '+code);
-    }
+    } else { showToast('Code: '+code); }
   }
+  
   function shareVia(platform){
     showToast(`Opening ${platform}...`);
-    // demo: simulate a friend joining shortly after sharing
-    setTimeout(()=>{
-      inviteCount += 1;
-      inviteEarned += 0.50;
-      balance += 0.50;
-      totalEarned += 0.50;
-      document.getElementById('inviteCount').textContent = inviteCount;
-      document.getElementById('inviteEarned').textContent = '$'+inviteEarned.toFixed(2);
-      document.getElementById('balance').textContent = balance.toFixed(2);
-      document.getElementById('totalEarned').textContent = totalEarned.toFixed(2);
-      updateJarFill();
-      updateAvailableHint();
-      showToast('A friend joined — +$0.50!');
-    }, 1600);
+    // Removed fake setTimeout referral reward. True user attribution requires a backend server.
   }
 
   /* ---------- cash out ---------- */
@@ -1090,15 +1096,11 @@
       </div>`
   };
 
-  function renderMethodFields(method){
-    document.getElementById('methodFields').innerHTML = fieldTemplates[method];
-  }
+  function renderMethodFields(method){ document.getElementById('methodFields').innerHTML = fieldTemplates[method]; }
   renderMethodFields(currentMethod);
 
   function selectMethod(id){
-    ['methodPaypal','methodBank','methodUsdt'].forEach(m=>{
-      document.getElementById(m).classList.toggle('selected', m===id);
-    });
+    ['methodPaypal','methodBank','methodUsdt'].forEach(m=>{ document.getElementById(m).classList.toggle('selected', m===id); });
     currentMethod = methodIdMap[id];
     renderMethodFields(currentMethod);
   }
@@ -1109,15 +1111,14 @@
   }
 
   function requestWithdraw(){
-    if(balance < 20){
-      showToast(`Need $${(20-balance).toFixed(2)} more to cash out (min $20.00)`);
+    if(balance < MIN_WITHDRAW){
+      showToast(`Need $${(MIN_WITHDRAW-balance).toFixed(2)} more to cash out (min $${MIN_WITHDRAW}.00)`);
       return;
     }
 
     let valid = true;
-
     const amountVal = parseFloat(document.getElementById('withdrawAmount').value);
-    const amountOk = !isNaN(amountVal) && amountVal >= 20 && amountVal <= balance;
+    const amountOk = !isNaN(amountVal) && amountVal >= MIN_WITHDRAW && amountVal <= balance;
     markInvalid('f-withdrawAmount', !amountOk);
     valid = amountOk;
 
@@ -1148,32 +1149,12 @@
       valid = valid && ok;
     }
 
-    if(!valid){
-      showToast('Please fill in the details correctly');
-      return;
-    }
+    if(!valid){ showToast('Please fill in the details correctly'); return; }
 
-    let destination = '';
-    let methodLabel = '';
-    let methodIcon = '';
-
-    if(currentMethod === 'paypal'){
-      destination = document.getElementById('paypalEmail').value.trim();
-      methodLabel = 'PayPal';
-      methodIcon = '🅿️';
-    }
-    if(currentMethod === 'bank'){
-      const acct = document.getElementById('bankAccount').value.trim();
-      destination = 'A/C ****' + acct.slice(-4);
-      methodLabel = 'Bank transfer';
-      methodIcon = '🏦';
-    }
-    if(currentMethod === 'usdt'){
-      const addr = document.getElementById('usdtAddress').value.trim();
-      destination = addr.slice(0,6) + '...' + addr.slice(-4);
-      methodLabel = 'USDT TRC20';
-      methodIcon = '💵';
-    }
+    let destination = ''; let methodLabel = ''; let methodIcon = '';
+    if(currentMethod === 'paypal'){ destination = document.getElementById('paypalEmail').value.trim(); methodLabel = 'PayPal'; methodIcon = '🅿️'; }
+    if(currentMethod === 'bank'){ const acct = document.getElementById('bankAccount').value.trim(); destination = 'A/C ****' + acct.slice(-4); methodLabel = 'Bank transfer'; methodIcon = '🏦'; }
+    if(currentMethod === 'usdt'){ const addr = document.getElementById('usdtAddress').value.trim(); destination = addr.slice(0,6) + '...' + addr.slice(-4); methodLabel = 'USDT TRC20'; methodIcon = '💵'; }
 
     balance -= amountVal;
     document.getElementById('balance').textContent = balance.toFixed(2);
@@ -1181,13 +1162,10 @@
     updateAvailableHint();
 
     withdrawalHistory.unshift({
-      amount: amountVal,
-      method: methodLabel,
-      icon: methodIcon,
-      detail: destination,
-      date: new Date(),
-      status: 'Pending'
+      amount: amountVal, method: methodLabel, icon: methodIcon, detail: destination, date: new Date(), status: 'Pending'
     });
+    
+    saveData();
     renderHistory();
 
     document.getElementById('withdrawAmount').value = '';
@@ -1202,8 +1180,7 @@
       return;
     }
     list.innerHTML = withdrawalHistory.map(item => {
-      const dateStr = item.date.toLocaleDateString(undefined, {month:'short', day:'numeric'}) +
-        ' · ' + item.date.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'});
+      const dateStr = item.date.toLocaleDateString(undefined, {month:'short', day:'numeric'}) + ' · ' + item.date.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'});
       const statusClass = item.status === 'Paid' ? 'paid' : 'pending';
       return `
         <div class="history-item">
@@ -1224,7 +1201,6 @@
     const hint = document.getElementById('availableHint');
     if(hint) hint.textContent = `(available $${balance.toFixed(2)})`;
   }
-  updateAvailableHint();
 </script>
 </body>
 </html>
