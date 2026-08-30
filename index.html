@@ -869,19 +869,19 @@
   const REWARD = 0.15;
   const MIN_WITHDRAW = 15;
   const DAILY_LIMIT = 3;
+  const REF_BONUS = 0.50;
 
   // Telegram WebApp Integration & Unique Database Keys
   const tg = window.Telegram.WebApp;
   tg.ready();
 
   const telegramUser = tg.initDataUnsafe?.user;
-  // Use numeric Telegram ID if available, otherwise generate a secure browser fallback
   const userId = telegramUser ? telegramUser.id : ('guest_' + Math.random().toString(36).substring(2, 8));
   
-  // Unique storage prefix based strictly on the unique numeric user ID
   const STORAGE_PREFIX = `jarly_user_${userId}_`;
+  const cloud = tg.CloudStorage;
 
-  // Local Storage Data scoped to unique Telegram ID
+  // Local state variables
   let balance = parseFloat(localStorage.getItem(STORAGE_PREFIX + 'balance')) || 0.00;
   let totalEarned = parseFloat(localStorage.getItem(STORAGE_PREFIX + 'totalEarned')) || 0.00;
   let totalWatched = parseInt(localStorage.getItem(STORAGE_PREFIX + 'totalWatched')) || 0;
@@ -903,14 +903,19 @@
   // Generate Unique Referral Link using user's Telegram ID
   const myInviteLink = `https://t.me/Jarly66_bot?start=ref_${userId}`;
 
-  // Handle incoming referrals from Telegram start_param or fallback url search params
+  // Handle incoming referrals via Telegram start_param or fallback url search params
   const startParam = tg.initDataUnsafe?.start_param;
   const urlParams = new URLSearchParams(window.location.search);
   const refCode = startParam || urlParams.get('ref');
 
-  if (refCode && refCode !== String(userId) && !localStorage.getItem(STORAGE_PREFIX + 'referredBy')) {
-    localStorage.setItem(STORAGE_PREFIX + 'referredBy', refCode);
-    localStorage.setItem(STORAGE_PREFIX + 'refAdsWatched', 0);
+  if (refCode && refCode !== String(userId)) {
+    cloud.getItem('referredBy', (err, existingRef) => {
+      if (!err && !existingRef) {
+        cloud.setItem('referredBy', refCode, () => {
+          cloud.setItem('refAdsWatched', '0');
+        });
+      }
+    });
   }
 
   // Parse withdrawal history
@@ -1087,18 +1092,8 @@
     updateJarFill();
     updateAvailableHint();
     
-    // Check if this user was referred by someone else
-    let referredBy = localStorage.getItem(STORAGE_PREFIX + 'referredBy');
-    if (referredBy) {
-      let refAds = parseInt(localStorage.getItem(STORAGE_PREFIX + 'refAdsWatched')) || 0;
-      if (refAds < 3) {
-        refAds++;
-        localStorage.setItem(STORAGE_PREFIX + 'refAdsWatched', refAds);
-        if (refAds === 3) {
-          console.log(`Referrer ${referredBy} target met via Telegram user ${userId}!`);
-        }
-      }
-    }
+    // Check and update cloud-based referral progress for invitees
+    checkAndCreditReferralProgress();
 
     const btn = document.getElementById('watchBtn');
     watching = false;
@@ -1112,6 +1107,86 @@
     showToast(`+$${REWARD.toFixed(2)} dropped in your jar`);
     setTimeout(()=>{ document.getElementById('progressFill').style.width = '0%'; }, 900);
   }
+
+  function checkAndCreditReferralProgress() {
+    cloud.getItem('referredBy', (err, referrerId) => {
+      if (!err && referrerId) {
+        cloud.getItem('refAdsWatched', (err, val) => {
+          let refAds = parseInt(val) || 0;
+          if (refAds < 3) {
+            refAds++;
+            cloud.setItem('refAdsWatched', refAds.toString(), () => {
+              if (refAds === 3) {
+                // Credit referee ($0.50 bonus) locally and cloud
+                balance += REF_BONUS;
+                totalEarned += REF_BONUS;
+                saveData();
+                document.getElementById('balance').textContent = balance.toFixed(2);
+                document.getElementById('totalEarned').textContent = totalEarned.toFixed(2);
+                updateJarFill();
+                updateAvailableHint();
+
+                // Credit referrer ($0.50 bonus) via CloudStorage keys
+                cloud.getItem(`user_${referrerId}_balance`, (err, currentBal) => {
+                  let refBal = parseFloat(currentBal) || 0.00;
+                  cloud.setItem(`user_${referrerId}_balance`, (refBal + REF_BONUS).toFixed(2));
+                });
+                cloud.getItem(`user_${referrerId}_earned`, (err, currentEarned) => {
+                  let refEarned = parseFloat(currentEarned) || 0.00;
+                  cloud.setItem(`user_${referrerId}_earned`, (refEarned + REF_BONUS).toFixed(2));
+                });
+                cloud.getItem(`user_${referrerId}_invites`, (err, currentInvites) => {
+                  let refInvites = parseInt(currentInvites) || 0;
+                  cloud.setItem(`user_${referrerId}_invites`, (refInvites + 1).toString());
+                });
+
+                showToast(`🎉 Referral bonus unlocked! +$0.50 added`);
+                cloud.removeItem('referredBy');
+              }
+            });
+          }
+        });
+      }
+    });
+  }
+
+  // Periodically check if referrer stats updated from cloud storage
+  setInterval(() => {
+    cloud.getItem(`user_${userId}_balance`, (err, cloudBal) => {
+      if (!err && cloudBal) {
+        let newBal = parseFloat(cloudBal);
+        if (newBal > balance) {
+          balance = newBal;
+          saveData();
+          document.getElementById('balance').textContent = balance.toFixed(2);
+          updateJarFill();
+          updateAvailableHint();
+        }
+      }
+    });
+    cloud.getItem(`user_${userId}_earned`, (err, cloudEarned) => {
+      if (!err && cloudEarned) {
+        let newEarned = parseFloat(cloudEarned);
+        if (newEarned > totalEarned) {
+          totalEarned = newEarned;
+          saveData();
+          document.getElementById('totalEarned').textContent = totalEarned.toFixed(2);
+        }
+      }
+    });
+    cloud.getItem(`user_${userId}_invites`, (err, cloudInvites) => {
+      if (!err && cloudInvites) {
+        let newInvites = parseInt(cloudInvites);
+        if (newInvites > inviteCount) {
+          inviteCount = newInvites;
+          inviteEarned = inviteCount * REF_BONUS;
+          saveData();
+          document.getElementById('inviteCount').textContent = inviteCount;
+          document.getElementById('inviteEarned').textContent = '$' + inviteEarned.toFixed(2);
+        }
+      }
+    });
+  }, 5000);
 
   /* ---------- invite ---------- */
   function copyLink(){
@@ -1278,4 +1353,3 @@
 </script>
 </body>
 </html>
-
