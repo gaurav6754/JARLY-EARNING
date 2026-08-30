@@ -68,11 +68,17 @@ const setReferredBy = db.prepare(`UPDATE users SET referred_by = ? WHERE id = ?`
 // https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
 // ---------------------------------------------------------------------
 function validateInitData(initData) {
-  if (!initData || typeof initData !== 'string') return null;
+  if (!initData || typeof initData !== 'string') {
+    console.log('[auth debug] initData missing or not a string:', initData);
+    return null;
+  }
 
   const params = new URLSearchParams(initData);
   const hash = params.get('hash');
-  if (!hash) return null;
+  if (!hash) {
+    console.log('[auth debug] no hash field in initData');
+    return null;
+  }
   params.delete('hash');
 
   const dataCheckString = [...params.entries()]
@@ -83,18 +89,28 @@ function validateInitData(initData) {
   const secretKey = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
   const computedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
 
-  if (computedHash !== hash) return null; // forged / tampered
+  if (computedHash !== hash) {
+    console.log('[auth debug] hash mismatch — BOT_TOKEN likely wrong. computed:', computedHash, 'received:', hash);
+    return null; // forged / tampered
+  }
 
   const authDate = parseInt(params.get('auth_date') || '0', 10);
-  if (!authDate || Date.now() / 1000 - authDate > MAX_AGE) return null; // stale/replayed
+  if (!authDate || Date.now() / 1000 - authDate > MAX_AGE) {
+    console.log('[auth debug] auth_date too old or missing:', authDate);
+    return null; // stale/replayed
+  }
 
   const userJson = params.get('user');
-  if (!userJson) return null;
+  if (!userJson) {
+    console.log('[auth debug] no user field in initData');
+    return null;
+  }
 
   try {
     const user = JSON.parse(userJson);
     return { user, startParam: params.get('start_param') || null };
   } catch {
+    console.log('[auth debug] failed to parse user JSON:', userJson);
     return null;
   }
 }
