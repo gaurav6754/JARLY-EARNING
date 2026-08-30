@@ -14,12 +14,21 @@ let inviteEarnings = {};  // { referrerId: earnings }
 
 app.post('/api/referral', (req, res) => {
   const { referrerId, refereeId } = req.body;
-  // Fixed bug: compare refereeId to referrerId
-  if (referrerId && refereeId && refereeId !== referrerId && !referrals[refereeId]) {
+  // Ensure user cannot refer themselves and referral isn't already logged
+  if (referrerId && refereeId && referrerId !== refereeId && !referrals[refereeId]) {
     referrals[refereeId] = referrerId;
     return res.json({ success: true, message: "Referral registered" });
   }
   res.json({ success: false, message: "Invalid or already registered" });
+});
+
+app.post('/api/earn', (req, res) => {
+  const { userId, amount } = req.body;
+  if (userId && amount) {
+    balances[userId] = (balances[userId] || 0) + parseFloat(amount);
+    return res.json({ success: true, balance: balances[userId] });
+  }
+  res.json({ success: false, message: "Invalid request" });
 });
 
 app.post('/api/complete-ads', (req, res) => {
@@ -42,7 +51,7 @@ app.post('/api/complete-ads', (req, res) => {
 app.get('/api/stats/:userId', (req, res) => {
   const userId = req.params.userId;
   res.json({
-    balance: balances[userId] || 0,
+    balance: balances[userId] !== undefined ? balances[userId] : null,
     inviteCount: inviteCounts[userId] || 0,
     inviteEarned: inviteEarnings[userId] || 0
   });
