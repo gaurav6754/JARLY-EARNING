@@ -20,9 +20,13 @@ if (!MONGODB_URI) {
 }
 
 const REWARD = 0.15;
-const DAILY_LIMIT = 3;
+const DAILY_LIMIT = 5;                     // was 3
+const AD_COOLDOWN_SECONDS = 30;            // 30s break between ads
 const REFERRAL_BONUS = 0.50;
-const MIN_WITHDRAW = 15;
+const MIN_WITHDRAW = 20;                   // always applies
+const MIN_REFERRALS_FIRST_WITHDRAW = 12;   // only applies to a user's very first withdrawal
+const WITHDRAW_INTERVAL_DAYS = 30;         // always applies, resets from the last withdrawal date
+const WITHDRAW_INTERVAL_MS = WITHDRAW_INTERVAL_DAYS * 24 * 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------
 // Database (MongoDB via Mongoose — persists across restarts/redeploys,
@@ -45,10 +49,12 @@ const userSchema = new mongoose.Schema({
   totalWatched: { type: Number, default: 0 },
   watchedToday: { type: Number, default: 0 },
   lastWatchDate: { type: String, default: '' },
+  lastAdWatchAt: { type: Date, default: null },     // exact timestamp, for the 60s cooldown
   referredBy: { type: String, default: null },
   referralBonusGiven: { type: Boolean, default: false },
   inviteCount: { type: Number, default: 0 },
   inviteEarned: { type: Number, default: 0 },
+  lastWithdrawAt: { type: Date, default: null },    // null = never withdrawn yet
   createdAt: { type: Date, default: Date.now },
 });
 
@@ -65,7 +71,7 @@ const User = mongoose.model('User', userSchema);
 const Withdrawal = mongoose.model('Withdrawal', withdrawalSchema);
 
 // ---------------------------------------------------------------------
-// Telegram initData validation (unchanged from the sqlite version)
+// Telegram initData validation (unchanged)
 // https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
 // ---------------------------------------------------------------------
 function validateInitData(initData) {
@@ -129,20 +135,47 @@ async function resetDailyIfNeeded(userDoc) {
   return userDoc;
 }
 
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+
 function toClientShape(userDoc) {
+  const now = Date.now();
+
+  // Ad cooldown info
+  let adCooldownRemainingSeconds = 0;
+  if (userDoc.lastAdWatchAt) {
+    const elapsedMs = now - userDoc.lastAdWatchAt.getTime();
+    const remainingMs = AD_COOLDOWN_SECONDS * 1000 - elapsedMs;
+    if (remainingMs > 0) adCooldownRemainingSeconds = Math.ceil(remainingMs / 1000);
+  }
+
+  // Withdraw eligibility info
+  const referenceDate = userDoc.lastWithdrawAt || userDoc.createdAt;
+  const nextWithdrawAvailableAt = new Date(referenceDate.getTime() + WITHDRAW_INTERVAL_MS);
+  const withdrawTimeReady = now >= nextWithdrawAvailableAt.getTime();
+  const isFirstWithdrawal = !userDoc.lastWithdrawAt;
+  const referralsSatisfied = !isFirstWithdrawal || userDoc.inviteCount >= MIN_REFERRALS_FIRST_WITHDRAW;
+
   return {
     userId: userDoc._id,
     balance: round2(userDoc.balance),
     totalEarned: round2(userDoc.totalEarned),
     totalWatched: userDoc.totalWatched,
     watchedToday: userDoc.watchedToday,
+    dailyLimit: DAILY_LIMIT,
+    adCooldownRemainingSeconds,
     inviteCount: userDoc.inviteCount,
     inviteEarned: round2(userDoc.inviteEarned),
+    withdraw: {
+      minAmount: MIN_WITHDRAW,
+      minReferralsForFirstWithdraw: MIN_REFERRALS_FIRST_WITHDRAW,
+      isFirstWithdrawal,
+      referralsSatisfied,
+      nextWithdrawAvailableAt: nextWithdrawAvailableAt.toISOString(),
+      eligibleNow: withdrawTimeReady && referralsSatisfied,
+    },
   };
-}
-
-function round2(n) {
-  return Math.round(n * 100) / 100;
 }
 
 // Express middleware: validates initData sent in the body on every
@@ -166,9 +199,6 @@ app.use(express.json());
 app.use(express.static(__dirname)); // serves index.html (and any other file) from the repo root
 
 // 1) Auto-bind: called once when the mini app opens.
-//    Creates the user if new, updates their profile info,
-//    and — if they arrived via a referral link — permanently
-//    records who referred them (only on first ever visit).
 app.post('/api/auth', requireTelegramAuth, async (req, res) => {
   try {
     const tgUser = req.telegramUser;
@@ -208,30 +238,71 @@ app.post('/api/auth', requireTelegramAuth, async (req, res) => {
   }
 });
 
-// 2) Watch an ad — server decides the reward, enforces the daily cap,
-//    and credits the referrer the FIRST time a referred user hits 3/day.
+// 2) Watch an ad — enforces daily cap (5/day), 60s cooldown between ads,
+//    and credits the referrer the FIRST time a referred user hits the daily cap.
 app.post('/api/watch-ad', requireTelegramAuth, async (req, res) => {
   try {
     const id = String(req.telegramUser.id);
     let userDoc = await User.findById(id);
     if (!userDoc) return res.status(404).json({ error: 'User not found. Call /api/auth first.' });
 
+    // Resync the day boundary first so the atomic update below compares
+    // against today's real watchedToday, not a stale value from yesterday.
     userDoc = await resetDailyIfNeeded(userDoc);
 
-    if (userDoc.watchedToday >= DAILY_LIMIT) {
-      return res.status(400).json({ error: 'Daily limit reached' });
+    const today = todayStr();
+    const now = new Date();
+    const cooldownCutoff = new Date(now.getTime() - AD_COOLDOWN_SECONDS * 1000);
+
+    // Single atomic write: the match conditions (daily cap not yet hit, AND
+    // cooldown already elapsed) are checked by MongoDB itself as part of the
+    // same operation that does the increment. Two requests arriving back to
+    // back — a double-tap, a network retry, an ad SDK firing its callback
+    // twice — can no longer both read "not yet at the limit" and both slip
+    // through, because there's no separate read-then-write gap left to race.
+    const updated = await User.findOneAndUpdate(
+      {
+        _id: id,
+        lastWatchDate: today,
+        watchedToday: { $lt: DAILY_LIMIT },
+        $or: [
+          { lastAdWatchAt: null },
+          { lastAdWatchAt: { $lte: cooldownCutoff } },
+        ],
+      },
+      {
+        $inc: { balance: REWARD, totalEarned: REWARD, totalWatched: 1, watchedToday: 1 },
+        $set: { lastWatchDate: today, lastAdWatchAt: now },
+      },
+      { new: true }
+    );
+
+    if (!updated) {
+      // The atomic write didn't match — figure out the real reason to report
+      // (rather than guessing), using a fresh read.
+      const fresh = await resetDailyIfNeeded(await User.findById(id));
+
+      if (fresh.watchedToday >= DAILY_LIMIT) {
+        return res.status(400).json({ error: 'Daily limit reached' });
+      }
+
+      if (fresh.lastAdWatchAt) {
+        const elapsedMs = Date.now() - fresh.lastAdWatchAt.getTime();
+        const cooldownMs = AD_COOLDOWN_SECONDS * 1000;
+        if (elapsedMs < cooldownMs) {
+          const waitSeconds = Math.ceil((cooldownMs - elapsedMs) / 1000);
+          return res.status(429).json({ error: `Please wait ${waitSeconds}s before watching another ad.`, waitSeconds });
+        }
+      }
+
+      return res.status(400).json({ error: 'Could not record this ad — please try again.' });
     }
 
-    userDoc.balance += REWARD;
-    userDoc.totalEarned += REWARD;
-    userDoc.totalWatched += 1;
-    userDoc.watchedToday += 1;
-    userDoc.lastWatchDate = todayStr();
-    await userDoc.save();
+    userDoc = updated;
 
     let rewarded = false;
 
-    // Credit the referrer once, the moment their referee completes today's 3rd ad
+    // Credit the referrer once, the moment their referee completes today's daily cap
     // (and only ever once per referee, via referralBonusGiven).
     if (userDoc.watchedToday === DAILY_LIMIT && userDoc.referredBy && !userDoc.referralBonusGiven) {
       const referrer = await User.findById(userDoc.referredBy);
@@ -254,8 +325,7 @@ app.post('/api/watch-ad', requireTelegramAuth, async (req, res) => {
   }
 });
 
-// 3) Poll for current stats (balance may have grown from a referral
-//    bonus credited by someone else's activity).
+// 3) Poll for current stats.
 app.post('/api/stats', requireTelegramAuth, async (req, res) => {
   try {
     const id = String(req.telegramUser.id);
@@ -269,7 +339,11 @@ app.post('/api/stats', requireTelegramAuth, async (req, res) => {
   }
 });
 
-// 4) Withdraw
+// 4) Withdraw — enforces:
+//    - $20 minimum, always
+//    - 12 referrals minimum, but ONLY for a user's very first withdrawal ever
+//    - 30-day gap, measured from account creation (first withdrawal) or from
+//      the previous withdrawal (every withdrawal after that)
 app.post('/api/withdraw', requireTelegramAuth, async (req, res) => {
   try {
     const id = String(req.telegramUser.id);
@@ -279,10 +353,27 @@ app.post('/api/withdraw', requireTelegramAuth, async (req, res) => {
 
     const amt = parseFloat(amount);
     if (isNaN(amt) || amt < MIN_WITHDRAW || amt > userDoc.balance) {
-      return res.status(400).json({ error: 'Invalid withdrawal amount' });
+      return res.status(400).json({ error: `Invalid amount. Minimum withdrawal is $${MIN_WITHDRAW}.` });
+    }
+
+    const isFirstWithdrawal = !userDoc.lastWithdrawAt;
+    if (isFirstWithdrawal && userDoc.inviteCount < MIN_REFERRALS_FIRST_WITHDRAW) {
+      return res.status(400).json({
+        error: `Your first withdrawal requires at least ${MIN_REFERRALS_FIRST_WITHDRAW} referrals. You currently have ${userDoc.inviteCount}.`,
+      });
+    }
+
+    const referenceDate = userDoc.lastWithdrawAt || userDoc.createdAt;
+    const nextAvailable = referenceDate.getTime() + WITHDRAW_INTERVAL_MS;
+    if (Date.now() < nextAvailable) {
+      return res.status(400).json({
+        error: `Withdrawals are available every ${WITHDRAW_INTERVAL_DAYS} days. Next available on ${new Date(nextAvailable).toISOString()}.`,
+        nextWithdrawAvailableAt: new Date(nextAvailable).toISOString(),
+      });
     }
 
     userDoc.balance -= amt;
+    userDoc.lastWithdrawAt = new Date();
     await userDoc.save();
 
     const withdrawal = await Withdrawal.create({
