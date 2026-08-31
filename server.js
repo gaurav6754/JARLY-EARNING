@@ -2,14 +2,20 @@ require('dotenv').config();
 const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
-const Database = require('better-sqlite3');
+const mongoose = require('mongoose');
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const MONGODB_URI = process.env.MONGODB_URI;
 const PORT = process.env.PORT || 3000;
 const MAX_AGE = parseInt(process.env.INIT_DATA_MAX_AGE_SECONDS || '86400', 10);
 
 if (!BOT_TOKEN) {
   console.error('Missing TELEGRAM_BOT_TOKEN in .env — copy .env.example to .env and fill it in.');
+  process.exit(1);
+}
+
+if (!MONGODB_URI) {
+  console.error('Missing MONGODB_URI in .env — copy .env.example to .env and fill it in.');
   process.exit(1);
 }
 
@@ -19,52 +25,47 @@ const REFERRAL_BONUS = 0.50;
 const MIN_WITHDRAW = 15;
 
 // ---------------------------------------------------------------------
-// Database
+// Database (MongoDB via Mongoose — persists across restarts/redeploys,
+// unlike the old sqlite file which lived on Heroku's ephemeral disk)
 // ---------------------------------------------------------------------
-const db = new Database('jarly.db');
-db.pragma('journal_mode = WAL');
+mongoose.connect(MONGODB_URI)
+  .then(() => console.log('MongoDB connected'))
+  .catch(err => {
+    console.error('MongoDB connection error:', err);
+    process.exit(1);
+  });
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    first_name TEXT,
-    last_name TEXT,
-    username TEXT,
-    balance REAL NOT NULL DEFAULT 0,
-    total_earned REAL NOT NULL DEFAULT 0,
-    total_watched INTEGER NOT NULL DEFAULT 0,
-    watched_today INTEGER NOT NULL DEFAULT 0,
-    last_watch_date TEXT,
-    referred_by TEXT,
-    referral_bonus_given INTEGER NOT NULL DEFAULT 0,
-    invite_count INTEGER NOT NULL DEFAULT 0,
-    invite_earned REAL NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
+const userSchema = new mongoose.Schema({
+  _id: { type: String }, // Telegram user id, used directly as the document id
+  firstName: { type: String, default: '' },
+  lastName: { type: String, default: '' },
+  username: { type: String, default: '' },
+  balance: { type: Number, default: 0 },
+  totalEarned: { type: Number, default: 0 },
+  totalWatched: { type: Number, default: 0 },
+  watchedToday: { type: Number, default: 0 },
+  lastWatchDate: { type: String, default: '' },
+  referredBy: { type: String, default: null },
+  referralBonusGiven: { type: Boolean, default: false },
+  inviteCount: { type: Number, default: 0 },
+  inviteEarned: { type: Number, default: 0 },
+  createdAt: { type: Date, default: Date.now },
+});
 
-  CREATE TABLE IF NOT EXISTS withdrawals (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL,
-    amount REAL NOT NULL,
-    method TEXT NOT NULL,
-    destination TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'Pending',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-`);
+const withdrawalSchema = new mongoose.Schema({
+  userId: { type: String, required: true },
+  amount: { type: Number, required: true },
+  method: { type: String, default: 'unknown' },
+  destination: { type: String, default: '' },
+  status: { type: String, default: 'Pending' },
+  createdAt: { type: Date, default: Date.now },
+});
 
-const getUser = db.prepare('SELECT * FROM users WHERE id = ?');
-const insertUser = db.prepare(`
-  INSERT INTO users (id, first_name, last_name, username, last_watch_date)
-  VALUES (?, ?, ?, ?, ?)
-`);
-const touchProfile = db.prepare(`
-  UPDATE users SET first_name = ?, last_name = ?, username = ? WHERE id = ?
-`);
-const setReferredBy = db.prepare(`UPDATE users SET referred_by = ? WHERE id = ?`);
+const User = mongoose.model('User', userSchema);
+const Withdrawal = mongoose.model('Withdrawal', withdrawalSchema);
 
 // ---------------------------------------------------------------------
-// Telegram initData validation
+// Telegram initData validation (unchanged from the sqlite version)
 // https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
 // ---------------------------------------------------------------------
 function validateInitData(initData) {
@@ -119,25 +120,24 @@ function todayStr() {
   return new Date().toISOString().slice(0, 10); // UTC YYYY-MM-DD
 }
 
-function resetDailyIfNeeded(row) {
-  if (row.last_watch_date !== todayStr()) {
-    db.prepare('UPDATE users SET watched_today = 0, last_watch_date = ? WHERE id = ?')
-      .run(todayStr(), row.id);
-    row.watched_today = 0;
-    row.last_watch_date = todayStr();
+async function resetDailyIfNeeded(userDoc) {
+  if (userDoc.lastWatchDate !== todayStr()) {
+    userDoc.watchedToday = 0;
+    userDoc.lastWatchDate = todayStr();
+    await userDoc.save();
   }
-  return row;
+  return userDoc;
 }
 
-function toClientShape(row) {
+function toClientShape(userDoc) {
   return {
-    userId: row.id,
-    balance: round2(row.balance),
-    totalEarned: round2(row.total_earned),
-    totalWatched: row.total_watched,
-    watchedToday: row.watched_today,
-    inviteCount: row.invite_count,
-    inviteEarned: round2(row.invite_earned),
+    userId: userDoc._id,
+    balance: round2(userDoc.balance),
+    totalEarned: round2(userDoc.totalEarned),
+    totalWatched: userDoc.totalWatched,
+    watchedToday: userDoc.watchedToday,
+    inviteCount: userDoc.inviteCount,
+    inviteEarned: round2(userDoc.inviteEarned),
   };
 }
 
@@ -166,108 +166,137 @@ app.use(express.json());
 app.use(express.static(__dirname)); // serves index.html (and any other file) from the repo root
 
 // 1) Auto-bind: called once when the mini app opens.
-//    Creates the user row if new, updates their profile info,
+//    Creates the user if new, updates their profile info,
 //    and — if they arrived via a referral link — permanently
 //    records who referred them (only on first ever visit).
-app.post('/api/auth', requireTelegramAuth, (req, res) => {
-  const tgUser = req.telegramUser;
-  const id = String(tgUser.id);
-  let row = getUser.get(id);
+app.post('/api/auth', requireTelegramAuth, async (req, res) => {
+  try {
+    const tgUser = req.telegramUser;
+    const id = String(tgUser.id);
+    let userDoc = await User.findById(id);
 
-  if (!row) {
-    insertUser.run(id, tgUser.first_name || '', tgUser.last_name || '', tgUser.username || '', todayStr());
-    row = getUser.get(id);
+    if (!userDoc) {
+      userDoc = new User({
+        _id: id,
+        firstName: tgUser.first_name || '',
+        lastName: tgUser.last_name || '',
+        username: tgUser.username || '',
+        lastWatchDate: todayStr(),
+      });
 
-    const ref = req.startParam ? req.startParam.replace(/^ref_/, '') : null;
-    if (ref && ref !== id) {
-      const referrer = getUser.get(ref);
-      if (referrer) {
-        setReferredBy.run(ref, id);
-        row.referred_by = ref;
+      const ref = req.startParam ? req.startParam.replace(/^ref_/, '') : null;
+      if (ref && ref !== id) {
+        const referrer = await User.findById(ref);
+        if (referrer) {
+          userDoc.referredBy = ref;
+        }
       }
-    }
-  } else {
-    touchProfile.run(tgUser.first_name || '', tgUser.last_name || '', tgUser.username || '', id);
-    row = resetDailyIfNeeded(row);
-  }
 
-  res.json(toClientShape(row));
+      await userDoc.save();
+    } else {
+      userDoc.firstName = tgUser.first_name || '';
+      userDoc.lastName = tgUser.last_name || '';
+      userDoc.username = tgUser.username || '';
+      await userDoc.save();
+      userDoc = await resetDailyIfNeeded(userDoc);
+    }
+
+    res.json(toClientShape(userDoc));
+  } catch (err) {
+    console.error('auth error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // 2) Watch an ad — server decides the reward, enforces the daily cap,
 //    and credits the referrer the FIRST time a referred user hits 3/day.
-app.post('/api/watch-ad', requireTelegramAuth, (req, res) => {
-  const id = String(req.telegramUser.id);
-  let row = getUser.get(id);
-  if (!row) return res.status(404).json({ error: 'User not found. Call /api/auth first.' });
+app.post('/api/watch-ad', requireTelegramAuth, async (req, res) => {
+  try {
+    const id = String(req.telegramUser.id);
+    let userDoc = await User.findById(id);
+    if (!userDoc) return res.status(404).json({ error: 'User not found. Call /api/auth first.' });
 
-  row = resetDailyIfNeeded(row);
+    userDoc = await resetDailyIfNeeded(userDoc);
 
-  if (row.watched_today >= DAILY_LIMIT) {
-    return res.status(400).json({ error: 'Daily limit reached' });
-  }
-
-  const newBalance = row.balance + REWARD;
-  const newTotalEarned = row.total_earned + REWARD;
-  const newTotalWatched = row.total_watched + 1;
-  const newWatchedToday = row.watched_today + 1;
-
-  db.prepare(`
-    UPDATE users
-    SET balance = ?, total_earned = ?, total_watched = ?, watched_today = ?, last_watch_date = ?
-    WHERE id = ?
-  `).run(newBalance, newTotalEarned, newTotalWatched, newWatchedToday, todayStr(), id);
-
-  let rewarded = false;
-
-  // Credit the referrer once, the moment their referee completes today's 3rd ad
-  // (and only ever once per referee, via referral_bonus_given).
-  if (newWatchedToday === DAILY_LIMIT && row.referred_by && !row.referral_bonus_given) {
-    const referrer = getUser.get(row.referred_by);
-    if (referrer) {
-      db.prepare(`
-        UPDATE users SET balance = balance + ?, invite_earned = invite_earned + ?, invite_count = invite_count + 1
-        WHERE id = ?
-      `).run(REFERRAL_BONUS, REFERRAL_BONUS, referrer.id);
-
-      db.prepare('UPDATE users SET referral_bonus_given = 1 WHERE id = ?').run(id);
-      rewarded = true;
+    if (userDoc.watchedToday >= DAILY_LIMIT) {
+      return res.status(400).json({ error: 'Daily limit reached' });
     }
-  }
 
-  const updatedRow = getUser.get(id);
-  res.json({ ...toClientShape(updatedRow), rewarded });
+    userDoc.balance += REWARD;
+    userDoc.totalEarned += REWARD;
+    userDoc.totalWatched += 1;
+    userDoc.watchedToday += 1;
+    userDoc.lastWatchDate = todayStr();
+    await userDoc.save();
+
+    let rewarded = false;
+
+    // Credit the referrer once, the moment their referee completes today's 3rd ad
+    // (and only ever once per referee, via referralBonusGiven).
+    if (userDoc.watchedToday === DAILY_LIMIT && userDoc.referredBy && !userDoc.referralBonusGiven) {
+      const referrer = await User.findById(userDoc.referredBy);
+      if (referrer) {
+        referrer.balance += REFERRAL_BONUS;
+        referrer.inviteEarned += REFERRAL_BONUS;
+        referrer.inviteCount += 1;
+        await referrer.save();
+
+        userDoc.referralBonusGiven = true;
+        await userDoc.save();
+        rewarded = true;
+      }
+    }
+
+    res.json({ ...toClientShape(userDoc), rewarded });
+  } catch (err) {
+    console.error('watch-ad error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // 3) Poll for current stats (balance may have grown from a referral
 //    bonus credited by someone else's activity).
-app.post('/api/stats', requireTelegramAuth, (req, res) => {
-  const id = String(req.telegramUser.id);
-  let row = getUser.get(id);
-  if (!row) return res.status(404).json({ error: 'User not found' });
-  row = resetDailyIfNeeded(row);
-  res.json(toClientShape(row));
+app.post('/api/stats', requireTelegramAuth, async (req, res) => {
+  try {
+    const id = String(req.telegramUser.id);
+    let userDoc = await User.findById(id);
+    if (!userDoc) return res.status(404).json({ error: 'User not found' });
+    userDoc = await resetDailyIfNeeded(userDoc);
+    res.json(toClientShape(userDoc));
+  } catch (err) {
+    console.error('stats error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // 4) Withdraw
-app.post('/api/withdraw', requireTelegramAuth, (req, res) => {
-  const id = String(req.telegramUser.id);
-  const { amount, method, destination } = req.body;
-  const row = getUser.get(id);
-  if (!row) return res.status(404).json({ error: 'User not found' });
+app.post('/api/withdraw', requireTelegramAuth, async (req, res) => {
+  try {
+    const id = String(req.telegramUser.id);
+    const { amount, method, destination } = req.body;
+    const userDoc = await User.findById(id);
+    if (!userDoc) return res.status(404).json({ error: 'User not found' });
 
-  const amt = parseFloat(amount);
-  if (isNaN(amt) || amt < MIN_WITHDRAW || amt > row.balance) {
-    return res.status(400).json({ error: 'Invalid withdrawal amount' });
+    const amt = parseFloat(amount);
+    if (isNaN(amt) || amt < MIN_WITHDRAW || amt > userDoc.balance) {
+      return res.status(400).json({ error: 'Invalid withdrawal amount' });
+    }
+
+    userDoc.balance -= amt;
+    await userDoc.save();
+
+    const withdrawal = await Withdrawal.create({
+      userId: id,
+      amount: amt,
+      method: method || 'unknown',
+      destination: destination || '',
+    });
+
+    res.json({ withdrawalId: withdrawal._id, ...toClientShape(userDoc) });
+  } catch (err) {
+    console.error('withdraw error:', err);
+    res.status(500).json({ error: 'Server error' });
   }
-
-  db.prepare('UPDATE users SET balance = balance - ? WHERE id = ?').run(amt, id);
-  const info = db.prepare(`
-    INSERT INTO withdrawals (user_id, amount, method, destination) VALUES (?, ?, ?, ?)
-  `).run(id, amt, method || 'unknown', destination || '');
-
-  const updatedRow = getUser.get(id);
-  res.json({ withdrawalId: info.lastInsertRowid, ...toClientShape(updatedRow) });
 });
 
 app.listen(PORT, () => console.log(`Jarly backend listening on :${PORT}`));
