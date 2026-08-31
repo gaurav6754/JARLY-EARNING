@@ -1231,8 +1231,23 @@
         const btn = document.getElementById('watchBtn');
         btn.disabled = false;
         btn.textContent = '▶';
-        document.getElementById('statusText').textContent = "Couldn't reach server — try again";
-        showToast(err?.error || "Couldn't record that ad — try again");
+
+        // Show the server's actual reason (e.g. "Daily limit reached") instead of
+        // a generic message — a rejection is not the same thing as a dropped connection.
+        const reason = err?.error || "Couldn't record that ad — try again";
+        document.getElementById('statusText').textContent = reason;
+        showToast(reason);
+
+        // Whatever the server just said, re-pull the real numbers so the on-screen
+        // count/limit can never drift from what's actually stored.
+        fetch('/api/stats', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData: rawInitData })
+        })
+          .then(res => res.ok ? res.json() : Promise.reject())
+          .then(data => applyServerState(data))
+          .catch(() => {});
       });
   }
 
