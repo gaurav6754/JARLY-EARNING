@@ -799,7 +799,7 @@
     <div class="view" id="view-invite">
       <div class="invite-card">
         <h2>Invite friends, earn together</h2>
-        <p>You both get <b>$0.50</b> when they join through your link and watch 3 ads.</p>
+        <p>You both get <b>$0.50</b> when they join through your link and watch 5 ads.</p>
         <div class="code-row">
           <span id="inviteLinkText">https://...</span>
           <button class="copy-btn" onclick="copyLink()">📋</button>
@@ -820,7 +820,8 @@
     <div class="view" id="view-cashout">
       <div class="cashout-card">
         <h2>Cash out</h2>
-        <p>Choose a method. Minimum withdrawal is $15.00.</p>
+        <p>Choose a method. Minimum withdrawal is $20.00.</p>
+        <div class="field-error" id="withdrawEligibilityBanner" style="display:none; margin-bottom:10px;"></div>
         <div class="method-row">
           <div class="method-btn selected" id="methodPaypal" onclick="selectMethod('methodPaypal')"><span class="n">🅿️</span><span class="lbl">PayPal</span></div>
           <div class="method-btn" id="methodBank" onclick="selectMethod('methodBank')"><span class="n">🏦</span><span class="lbl">Bank</span></div>
@@ -829,8 +830,8 @@
         <div class="fields-wrap">
           <div class="field" id="f-withdrawAmount">
             <label>Amount to withdraw <span id="availableHint">(available $0.00)</span></label>
-            <input type="number" id="withdrawAmount" placeholder="Minimum $15.00" min="15" step="0.01">
-            <span class="field-error" id="amountError">Enter an amount between $15 and your balance</span>
+            <input type="number" id="withdrawAmount" placeholder="Minimum $20.00" min="20" step="0.01">
+            <span class="field-error" id="amountError">Enter an amount between $20 and your balance</span>
           </div>
         </div>
         <div class="fields-wrap" id="methodFields"></div>
@@ -867,8 +868,10 @@
 
 <script>
   const REWARD = 0.15;
-  const MIN_WITHDRAW = 15;
-  const DAILY_LIMIT = 3;
+  const MIN_WITHDRAW = 20;
+  const DAILY_LIMIT = 5;
+  const AD_COOLDOWN_SECONDS = 60;
+  const MIN_REFERRALS_FIRST_WITHDRAW = 12;
 
   // Telegram WebApp Integration & Unique Database Keys
   const tg = window.Telegram.WebApp;
@@ -902,6 +905,10 @@
     } catch {}
   }
 
+  let adCooldownRemainingSeconds = 0;
+  let withdrawInfo = null; // { minAmount, minReferralsForFirstWithdraw, isFirstWithdrawal, referralsSatisfied, nextWithdrawAvailableAt, eligibleNow }
+  let adCooldownTimer = null;
+
   function applyServerState(data) {
     userId = String(data.userId);
     balance = data.balance;
@@ -910,8 +917,11 @@
     watchedToday = data.watchedToday;
     inviteCount = data.inviteCount;
     inviteEarned = data.inviteEarned;
+    adCooldownRemainingSeconds = data.adCooldownRemainingSeconds || 0;
+    withdrawInfo = data.withdraw || null;
     saveData();
     refreshAllUI();
+    startAdCooldownCountdownIfNeeded();
   }
 
   function saveData() {
@@ -976,6 +986,32 @@
     updateAvailableHint();
     renderHistory();
     checkDailyLimit();
+    renderWithdrawEligibilityBanner();
+  }
+
+  // Shows why cashing out isn't available yet (referrals needed, or the
+  // 30-day gap since last withdrawal / signup hasn't passed). Hides itself
+  // once the user is fully eligible.
+  function renderWithdrawEligibilityBanner(){
+    const banner = document.getElementById('withdrawEligibilityBanner');
+    if (!banner || !withdrawInfo) { if(banner) banner.style.display = 'none'; return; }
+
+    if (withdrawInfo.isFirstWithdrawal && !withdrawInfo.referralsSatisfied) {
+      const remaining = Math.max(0, MIN_REFERRALS_FIRST_WITHDRAW - inviteCount);
+      banner.textContent = `Your first withdrawal needs ${MIN_REFERRALS_FIRST_WITHDRAW} referrals — invite ${remaining} more`;
+      banner.style.display = 'block';
+      return;
+    }
+
+    if (!withdrawInfo.eligibleNow) {
+      const next = new Date(withdrawInfo.nextWithdrawAvailableAt);
+      const dateStr = next.toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' });
+      banner.textContent = `Next withdrawal available on ${dateStr}`;
+      banner.style.display = 'block';
+      return;
+    }
+
+    banner.style.display = 'none';
   }
 
   window.onload = () => {
@@ -1078,6 +1114,40 @@
     return false;
   }
 
+  // Disables the watch button and shows a live countdown while a cooldown
+  // (server-enforced, 60s between ads) is active. Re-enables automatically
+  // when it hits zero, unless the daily limit is also reached.
+  function startAdCooldownCountdownIfNeeded() {
+    clearInterval(adCooldownTimer);
+    if (checkDailyLimit()) return; // daily-limit message takes priority
+    if (!adCooldownRemainingSeconds || adCooldownRemainingSeconds <= 0) return;
+
+    const btn = document.getElementById('watchBtn');
+    btn.disabled = true;
+    watching = true;
+
+    const tick = () => {
+      if (adCooldownRemainingSeconds <= 0) {
+        clearInterval(adCooldownTimer);
+        watching = false;
+        if (!checkDailyLimit()) {
+          btn.disabled = false;
+          btn.textContent = '▶';
+          document.getElementById('watchTitle').textContent = "Watch & Earn";
+          document.getElementById('statusText').textContent = "Jar's open — ready when you are";
+        }
+        return;
+      }
+      btn.textContent = adCooldownRemainingSeconds + 's';
+      document.getElementById('watchTitle').textContent = "On cooldown";
+      document.getElementById('statusText').textContent = `Next ad in ${adCooldownRemainingSeconds}s`;
+      adCooldownRemainingSeconds -= 1;
+    };
+
+    tick();
+    adCooldownTimer = setInterval(tick, 1000);
+  }
+
   function watchAd(){
     if(watching || checkDailyLimit()) return;
     watching = true;
@@ -1146,11 +1216,21 @@
       })
       .catch(err => {
         console.error('Reward error:', err);
+        document.getElementById('progressFill').style.width = '0%';
+
+        if (err && typeof err.waitSeconds === 'number') {
+          // Server says we're still on cooldown — sync up and show the countdown
+          // instead of leaving the button in a broken "try again" state.
+          adCooldownRemainingSeconds = err.waitSeconds;
+          showToast(err.error || `Please wait ${err.waitSeconds}s before the next ad`);
+          startAdCooldownCountdownIfNeeded();
+          return;
+        }
+
         watching = false;
         const btn = document.getElementById('watchBtn');
         btn.disabled = false;
         btn.textContent = '▶';
-        document.getElementById('progressFill').style.width = '0%';
         document.getElementById('statusText').textContent = "Couldn't reach server — try again";
         showToast(err?.error || "Couldn't record that ad — try again");
       });
@@ -1245,6 +1325,20 @@
     if(balance < MIN_WITHDRAW){
       showToast(`Need $${(MIN_WITHDRAW-balance).toFixed(2)} more to cash out (min $${MIN_WITHDRAW}.00)`);
       return;
+    }
+
+    if (withdrawInfo) {
+      if (withdrawInfo.isFirstWithdrawal && !withdrawInfo.referralsSatisfied) {
+        const remaining = Math.max(0, MIN_REFERRALS_FIRST_WITHDRAW - inviteCount);
+        showToast(`Your first withdrawal needs ${MIN_REFERRALS_FIRST_WITHDRAW} referrals — invite ${remaining} more`);
+        return;
+      }
+      if (!withdrawInfo.eligibleNow) {
+        const next = new Date(withdrawInfo.nextWithdrawAvailableAt);
+        const dateStr = next.toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' });
+        showToast(`Next withdrawal available on ${dateStr}`);
+        return;
+      }
     }
 
     let valid = true;
