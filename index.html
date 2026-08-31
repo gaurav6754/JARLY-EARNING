@@ -1184,7 +1184,15 @@
     }, 100);
   }
 
+  let rewardRequestInFlight = false;
+
   function rewardUser(){
+    // Guard against the ad SDK's completion callback firing more than once
+    // for a single view (seen with some in-app ad units) — without this, a
+    // double-fire would send two /api/watch-ad requests for one ad watched.
+    if (rewardRequestInFlight) return;
+    rewardRequestInFlight = true;
+
     // The server is the only source of truth for the reward — it validates
     // initData, enforces the daily cap, and credits any referral bonus
     // atomically. We just show whatever it tells us.
@@ -1248,6 +1256,9 @@
           .then(res => res.ok ? res.json() : Promise.reject())
           .then(data => applyServerState(data))
           .catch(() => {});
+      })
+      .finally(() => {
+        rewardRequestInFlight = false;
       });
   }
 
