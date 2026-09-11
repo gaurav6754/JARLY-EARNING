@@ -699,7 +699,6 @@
     cursor:pointer;
   }
 </style>
-<script src="https://sad.adsgram.ai/js/sad.min.js"></script>
 </head>
 <body>
 <div class="app">
@@ -761,7 +760,7 @@
         <div class="ticket-head">
           <span class="eyebrow">Quick earn</span>
           <h2>Drop a coin, watch an ad</h2>
-          <p>Finish one short video and <b>$0.15</b> lands straight in your jar. (Limit 5 per day).</p>
+          <p>Finish one short video and <b>$0.15</b> lands straight in your jar. (5 Monetag + 5 Adsgram per day).</p>
         </div>
         <div class="ticket-perf"></div>
         <div class="coin-launch">
@@ -776,7 +775,7 @@
           <div class="track"><div class="track-fill" id="progressFill"></div></div>
           <div class="track-label">
             <span>Today's coins</span>
-            <span><span id="watchedToday">0</span> / 5 watched</span>
+            <span><span id="watchedToday">0</span> / 10 watched</span>
           </div>
         </div>
         <div class="status-strip">
@@ -801,7 +800,7 @@
     <div class="view" id="view-invite">
       <div class="invite-card">
         <h2>Invite friends, earn together</h2>
-        <p>You both get <b>$0.50</b> when they join through your link and watch 5 ads.</p>
+        <p>You both get <b>$0.50</b> when they join through your link and watch ads.</p>
         <div class="code-row">
           <span id="inviteLinkText">https://...</span>
           <button class="copy-btn" onclick="copyLink()">📋</button>
@@ -871,7 +870,7 @@
 <script>
   const REWARD = 0.15;
   const MIN_WITHDRAW = 20;
-  const DAILY_LIMIT = 5;
+  const DAILY_LIMIT = 10; // 5 Monetag + 5 Adsgram
   const AD_COOLDOWN_SECONDS = 30;
   const MIN_REFERRALS_FIRST_WITHDRAW = 12;
 
@@ -960,18 +959,18 @@
       });
   }
 
-  // Monetag Config
+  // Monetag SDK Initialization
   if (typeof window.show_11689642 === 'function') {
     window.show_11689642({ type: 'inApp', inAppSettings: { frequency: 3, capping: 24, interval: 120, timeout: 5, everyPage: false } });
   }
 
-  // Adsgram SDK Initialization (5 Block Controllers)
+  // Adsgram Controllers with valid blockId formats ('int-' prefix followed by numbers)
   const adsgramControllers = [
-    window.Adsgram ? window.Adsgram.init({ blockId: "your-block-id-1" }) : null,
-    window.Adsgram ? window.Adsgram.init({ blockId: "your-block-id-2" }) : null,
-    window.Adsgram ? window.Adsgram.init({ blockId: "your-block-id-3" }) : null,
-    window.Adsgram ? window.Adsgram.init({ blockId: "your-block-id-4" }) : null,
-    window.Adsgram ? window.Adsgram.init({ blockId: "your-block-id-5" }) : null,
+    window.Adsgram ? window.Adsgram.init({ blockId: "int-1" }) : null,
+    window.Adsgram ? window.Adsgram.init({ blockId: "int-2" }) : null,
+    window.Adsgram ? window.Adsgram.init({ blockId: "int-3" }) : null,
+    window.Adsgram ? window.Adsgram.init({ blockId: "int-4" }) : null,
+    window.Adsgram ? window.Adsgram.init({ blockId: "int-5" }) : null,
   ];
 
   function refreshAllUI() {
@@ -1094,6 +1093,13 @@
       document.getElementById('statusPulse').style.boxShadow = 'none';
       return true;
     }
+    
+    // Update labels based on network phase
+    if (watchedToday < 5) {
+      document.getElementById('watchTitle').textContent = `Watch Monetag Ad (${watchedToday + 1}/5)`;
+    } else {
+      document.getElementById('watchTitle').textContent = `Watch Adsgram Ad (${watchedToday - 4}/5)`;
+    }
     return false;
   }
 
@@ -1113,13 +1119,11 @@
         if (!checkDailyLimit()) {
           btn.disabled = false;
           btn.textContent = '▶';
-          document.getElementById('watchTitle').textContent = "Watch & Earn";
           document.getElementById('statusText').textContent = "Jar's open — ready when you are";
         }
         return;
       }
       btn.textContent = adCooldownRemainingSeconds + 's';
-      document.getElementById('watchTitle').textContent = "On cooldown";
       document.getElementById('statusText').textContent = `Next ad in ${adCooldownRemainingSeconds}s`;
       adCooldownRemainingSeconds -= 1;
     };
@@ -1135,46 +1139,77 @@
     const fill = document.getElementById('progressFill');
     btn.disabled = true;
     btn.textContent = '⏳';
-    document.getElementById('statusText').textContent = "Playing your ad...";
 
-    // Use Adsgram controller corresponding to watchedToday index (0 to 4)
-    const controllerIndex = Math.min(watchedToday, adsgramControllers.length - 1);
-    const controller = adsgramControllers[controllerIndex] || adsgramControllers[0];
-
-    if (controller) {
-      controller.show().then((result) => {
-        if (result.done) {
+    // First 5 ads (0 to 4): Monetag. Next 5 ads (5 to 9): Adsgram.
+    if (watchedToday < 5) {
+      document.getElementById('statusText').textContent = "Playing Monetag ad...";
+      
+      if (typeof window.show_11689642 === 'function') {
+        window.show_11689642().then(() => {
           fill.style.width = '100%';
           rewardUser();
-        } else {
+        }).catch(() => {
+          // Fallback simulation if monetag promise rejects or completes immediately
+          let progress = 0;
+          const interval = setInterval(()=>{
+            progress += 100/30;
+            fill.style.width = Math.min(progress,100) + '%';
+            if(progress >= 100){
+              clearInterval(interval);
+              rewardUser();
+            }
+          }, 100);
+        });
+      } else {
+        // Fallback simulation if SDK not present
+        let progress = 0;
+        const interval = setInterval(()=>{
+          progress += 100/30;
+          fill.style.width = Math.min(progress,100) + '%';
+          if(progress >= 100){
+            clearInterval(interval);
+            rewardUser();
+          }
+        }, 100);
+      }
+    } else {
+      document.getElementById('statusText').textContent = "Playing Adsgram ad...";
+      const controllerIndex = Math.min(watchedToday - 5, adsgramControllers.length - 1);
+      const controller = adsgramControllers[controllerIndex] || adsgramControllers[0];
+
+      if (controller) {
+        controller.show().then((result) => {
+          if (result.done) {
+            fill.style.width = '100%';
+            rewardUser();
+          } else {
+            fill.style.width = '0%';
+            btn.disabled = false;
+            btn.textContent = '▶';
+            watching = false;
+            document.getElementById('statusText').textContent = "Ad closed early — try again";
+            showToast("Ad wasn't completed, no reward this time");
+          }
+        }).catch((result) => {
           fill.style.width = '0%';
           btn.disabled = false;
           btn.textContent = '▶';
           watching = false;
-          document.getElementById('statusText').textContent = "Ad closed early — try again";
-          showToast("Ad wasn't completed, no reward this time");
-        }
-      }).catch((result) => {
-        fill.style.width = '0%';
-        btn.disabled = false;
-        btn.textContent = '▶';
-        watching = false;
-        document.getElementById('statusText').textContent = "Error playing ad — try again";
-        showToast("Ad error occurred");
-      });
-      return;
-    }
-
-    // Fallback simulation if AdsGram SDK is missing
-    let progress = 0;
-    const interval = setInterval(()=>{
-      progress += 100/30;
-      fill.style.width = Math.min(progress,100) + '%';
-      if(progress >= 100){
-        clearInterval(interval);
-        rewardUser();
+          document.getElementById('statusText').textContent = "Error playing ad — try again";
+          showToast("Ad error occurred");
+        });
+      } else {
+        let progress = 0;
+        const interval = setInterval(()=>{
+          progress += 100/30;
+          fill.style.width = Math.min(progress,100) + '%';
+          if(progress >= 100){
+            clearInterval(interval);
+            rewardUser();
+          }
+        }, 100);
       }
-    }, 100);
+    }
   }
 
   let rewardRequestInFlight = false;
