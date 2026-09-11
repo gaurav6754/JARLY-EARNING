@@ -6,6 +6,7 @@
 <title>Jarly - Earn</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src='//libtl.com/sdk.js' data-zone='11689642' data-sdk='show_11689642'></script>
+<script src="https://sad.adsgram.ai/js/sad.min.js"></script>
 <style>
   :root{
     --mint:#eafcf5;
@@ -698,6 +699,7 @@
     cursor:pointer;
   }
 </style>
+<script src="https://sad.adsgram.ai/js/sad.min.js"></script>
 </head>
 <body>
 <div class="app">
@@ -877,12 +879,8 @@
   const tg = window.Telegram.WebApp;
   tg.ready();
 
-  // The RAW signed initData string — this (not initDataUnsafe) is what proves
-  // to the server "this really is Telegram user X". Never trust a client-side
-  // user id for anything that grants money; the server re-derives it from this.
   const rawInitData = tg.initData;
 
-  // These are placeholders until /api/auth responds with server-verified values.
   let userId = tg.initDataUnsafe?.user?.id ? String(tg.initDataUnsafe.user.id) : null;
   let balance = 0, totalEarned = 0, totalWatched = 0, watchedToday = 0, inviteCount = 0, inviteEarned = 0;
   let watching = false;
@@ -890,8 +888,6 @@
 
   const myInviteLink = () => `https://t.me/Jarly66_bot?startapp=ref_${userId}`;
 
-  // Local cache only (for instant paint before /api/auth returns) — never
-  // treated as the source of truth. The server response always wins.
   const STORAGE_PREFIX = 'jarly_cache_';
   function loadCache() {
     try {
@@ -906,7 +902,7 @@
   }
 
   let adCooldownRemainingSeconds = 0;
-  let withdrawInfo = null; // { minAmount, minReferralsForFirstWithdraw, isFirstWithdrawal, referralsSatisfied, nextWithdrawAvailableAt, eligibleNow }
+  let withdrawInfo = null;
   let adCooldownTimer = null;
 
   function applyServerState(data) {
@@ -930,7 +926,6 @@
     }));
   }
 
-  // Parse withdrawal history (cosmetic/local only — server is source of truth for balance)
   let withdrawalHistory = [];
   try {
     const savedHistory = localStorage.getItem(STORAGE_PREFIX + 'history_' + (userId || 'guest'));
@@ -943,9 +938,6 @@
     localStorage.setItem(STORAGE_PREFIX + 'history_' + userId, JSON.stringify(withdrawalHistory));
   }
 
-  // Extract the referral code from the deep link (?start=ref_XXXX) purely for
-  // display before auth resolves — the server independently re-derives and
-  // verifies start_param from the signed initData, so this value is never trusted.
   const startParamRaw = tg.initDataUnsafe?.start_param || new URLSearchParams(window.location.search).get('ref');
 
   function initAuth() {
@@ -973,7 +965,15 @@
     window.show_11689642({ type: 'inApp', inAppSettings: { frequency: 3, capping: 24, interval: 120, timeout: 5, everyPage: false } });
   }
 
-  // Initialize UI Text
+  // Adsgram SDK Initialization (5 Block Controllers)
+  const adsgramControllers = [
+    window.Adsgram ? window.Adsgram.init({ blockId: "your-block-id-1" }) : null,
+    window.Adsgram ? window.Adsgram.init({ blockId: "your-block-id-2" }) : null,
+    window.Adsgram ? window.Adsgram.init({ blockId: "your-block-id-3" }) : null,
+    window.Adsgram ? window.Adsgram.init({ blockId: "your-block-id-4" }) : null,
+    window.Adsgram ? window.Adsgram.init({ blockId: "your-block-id-5" }) : null,
+  ];
+
   function refreshAllUI() {
     document.getElementById('inviteLinkText').textContent = userId ? myInviteLink() : 'Loading…';
     document.getElementById('balance').textContent = balance.toFixed(2);
@@ -989,9 +989,6 @@
     renderWithdrawEligibilityBanner();
   }
 
-  // Shows why cashing out isn't available yet (referrals needed, or the
-  // 30-day gap since last withdrawal / signup hasn't passed). Hides itself
-  // once the user is fully eligible.
   function renderWithdrawEligibilityBanner(){
     const banner = document.getElementById('withdrawEligibilityBanner');
     if (!banner || !withdrawInfo) { if(banner) banner.style.display = 'none'; return; }
@@ -1015,20 +1012,9 @@
   }
 
   window.onload = () => {
-    loadCache();       // instant paint from last-known values
+    loadCache();
     refreshAllUI();
-    initAuth();         // then verify with server and correct if needed
-
-    // TEMPORARY DEBUG: shows whether a referral code was picked up on this
-    // launch, so you can visually confirm it on the referred phone. Remove
-    // this block once referrals are confirmed working.
-    setTimeout(() => {
-      if (startParamRaw) {
-        showToast('DEBUG: referral code detected → ' + startParamRaw);
-      } else {
-        showToast('DEBUG: no referral code detected on this launch');
-      }
-    }, 1200);
+    initAuth();
   };
 
   function updateClock(){
@@ -1049,7 +1035,6 @@
 
   function scrollTop(){ window.scrollTo({top:0, behavior:'smooth'}); }
 
-  /* ---------- view switching ---------- */
   const views = ['earn','invite','cashout'];
   function showView(name){
     views.forEach(v=>{ document.getElementById('view-'+v)?.classList.toggle('active', v===name); });
@@ -1059,7 +1044,6 @@
     closeMenu(); window.scrollTo({top:0, behavior:'smooth'});
   }
 
-  /* ---------- menu & sheets ---------- */
   function toggleMenu(){
     const menu = document.getElementById('menuDropdown');
     const chip = document.getElementById('menuChip');
@@ -1086,11 +1070,10 @@
   function closeSheet(){ document.getElementById('overlay').classList.remove('show'); }
   function openSupport(){ openSheet('Support', "We're here to help. Chat replies usually arrive within a few minutes during daytime hours."); }
   function openProfile(){ 
-    const userName = telegramUser ? (telegramUser.first_name + (telegramUser.last_name ? ' ' + telegramUser.last_name : '')) : 'Guest User';
+    const userName = tg.initDataUnsafe?.user ? (tg.initDataUnsafe.user.first_name + (tg.initDataUnsafe.user.last_name ? ' ' + tg.initDataUnsafe.user.last_name : '')) : 'Guest User';
     openSheet('Your profile', `${userName} · Telegram ID: ${userId}`); 
   }
 
-  /* ---------- earn / watch ad ---------- */
   function updateJarFill(){
     const pct = Math.min(balance / MIN_WITHDRAW, 1);
     const jar = document.getElementById('jarFill');
@@ -1114,12 +1097,9 @@
     return false;
   }
 
-  // Disables the watch button and shows a live countdown while a cooldown
-  // (server-enforced, 60s between ads) is active. Re-enables automatically
-  // when it hits zero, unless the daily limit is also reached.
   function startAdCooldownCountdownIfNeeded() {
     clearInterval(adCooldownTimer);
-    if (checkDailyLimit()) return; // daily-limit message takes priority
+    if (checkDailyLimit()) return;
     if (!adCooldownRemainingSeconds || adCooldownRemainingSeconds <= 0) return;
 
     const btn = document.getElementById('watchBtn');
@@ -1157,22 +1137,35 @@
     btn.textContent = '⏳';
     document.getElementById('statusText').textContent = "Playing your ad...";
 
-    if (typeof window.show_11689642 === 'function') {
-      window.show_11689642().then(() => {
-        fill.style.width = '100%';
-        rewardUser();
-      }).catch(() => {
+    // Use Adsgram controller corresponding to watchedToday index (0 to 4)
+    const controllerIndex = Math.min(watchedToday, adsgramControllers.length - 1);
+    const controller = adsgramControllers[controllerIndex] || adsgramControllers[0];
+
+    if (controller) {
+      controller.show().then((result) => {
+        if (result.done) {
+          fill.style.width = '100%';
+          rewardUser();
+        } else {
+          fill.style.width = '0%';
+          btn.disabled = false;
+          btn.textContent = '▶';
+          watching = false;
+          document.getElementById('statusText').textContent = "Ad closed early — try again";
+          showToast("Ad wasn't completed, no reward this time");
+        }
+      }).catch((result) => {
         fill.style.width = '0%';
         btn.disabled = false;
         btn.textContent = '▶';
         watching = false;
-        document.getElementById('statusText').textContent = "Ad didn't finish — try again";
-        showToast("Ad wasn't completed, no reward this time");
+        document.getElementById('statusText').textContent = "Error playing ad — try again";
+        showToast("Ad error occurred");
       });
       return;
     }
 
-    // Fallback simulation
+    // Fallback simulation if AdsGram SDK is missing
     let progress = 0;
     const interval = setInterval(()=>{
       progress += 100/30;
@@ -1187,15 +1180,9 @@
   let rewardRequestInFlight = false;
 
   function rewardUser(){
-    // Guard against the ad SDK's completion callback firing more than once
-    // for a single view (seen with some in-app ad units) — without this, a
-    // double-fire would send two /api/watch-ad requests for one ad watched.
     if (rewardRequestInFlight) return;
     rewardRequestInFlight = true;
 
-    // The server is the only source of truth for the reward — it validates
-    // initData, enforces the daily cap, and credits any referral bonus
-    // atomically. We just show whatever it tells us.
     fetch('/api/watch-ad', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1227,8 +1214,6 @@
         document.getElementById('progressFill').style.width = '0%';
 
         if (err && typeof err.waitSeconds === 'number') {
-          // Server says we're still on cooldown — sync up and show the countdown
-          // instead of leaving the button in a broken "try again" state.
           adCooldownRemainingSeconds = err.waitSeconds;
           showToast(err.error || `Please wait ${err.waitSeconds}s before the next ad`);
           startAdCooldownCountdownIfNeeded();
@@ -1240,14 +1225,10 @@
         btn.disabled = false;
         btn.textContent = '▶';
 
-        // Show the server's actual reason (e.g. "Daily limit reached") instead of
-        // a generic message — a rejection is not the same thing as a dropped connection.
         const reason = err?.error || "Couldn't record that ad — try again";
         document.getElementById('statusText').textContent = reason;
         showToast(reason);
 
-        // Whatever the server just said, re-pull the real numbers so the on-screen
-        // count/limit can never drift from what's actually stored.
         fetch('/api/stats', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1262,8 +1243,6 @@
       });
   }
 
-  // Periodically re-sync from the server (e.g. picks up a referral bonus
-  // credited because of someone else's activity, without needing a reload).
   setInterval(() => {
     if (!authReady) return;
     fetch('/api/stats', {
@@ -1276,7 +1255,6 @@
       .catch(() => {});
   }, 5000);
 
-  /* ---------- invite ---------- */
   function copyLink(){
     if(navigator.clipboard){
       navigator.clipboard.writeText(myInviteLink()).then(()=> showToast('Link copied!')).catch(()=> showToast('Link: '+myInviteLink()));
@@ -1298,7 +1276,6 @@
     }
   }
 
-  /* ---------- cash out ---------- */
   const methodIdMap = { methodPaypal:'paypal', methodBank:'bank', methodUsdt:'usdt' };
   let currentMethod = 'paypal';
 
@@ -1465,4 +1442,3 @@
 </script>
 </body>
 </html>
-
