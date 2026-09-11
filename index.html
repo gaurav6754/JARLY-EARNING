@@ -964,13 +964,13 @@
     window.show_11689642({ type: 'inApp', inAppSettings: { frequency: 3, capping: 24, interval: 120, timeout: 5, everyPage: false } });
   }
 
-  // Adsgram Controllers with valid blockId formats ('int-' prefix followed by numbers)
+  // Adsgram Controllers updated with blockId: "47409"
   const adsgramControllers = [
-    window.Adsgram ? window.Adsgram.init({ blockId: "int-1" }) : null,
-    window.Adsgram ? window.Adsgram.init({ blockId: "int-2" }) : null,
-    window.Adsgram ? window.Adsgram.init({ blockId: "int-3" }) : null,
-    window.Adsgram ? window.Adsgram.init({ blockId: "int-4" }) : null,
-    window.Adsgram ? window.Adsgram.init({ blockId: "int-5" }) : null,
+    window.Adsgram ? window.Adsgram.init({ blockId: "47409" }) : null,
+    window.Adsgram ? window.Adsgram.init({ blockId: "47409" }) : null,
+    window.Adsgram ? window.Adsgram.init({ blockId: "47409" }) : null,
+    window.Adsgram ? window.Adsgram.init({ blockId: "47409" }) : null,
+    window.Adsgram ? window.Adsgram.init({ blockId: "47409" }) : null,
   ];
 
   function refreshAllUI() {
@@ -1094,7 +1094,6 @@
       return true;
     }
     
-    // Update labels based on network phase
     if (watchedToday < 5) {
       document.getElementById('watchTitle').textContent = `Watch Monetag Ad (${watchedToday + 1}/5)`;
     } else {
@@ -1140,7 +1139,6 @@
     btn.disabled = true;
     btn.textContent = '⏳';
 
-    // First 5 ads (0 to 4): Monetag. Next 5 ads (5 to 9): Adsgram.
     if (watchedToday < 5) {
       document.getElementById('statusText').textContent = "Playing Monetag ad...";
       
@@ -1149,7 +1147,6 @@
           fill.style.width = '100%';
           rewardUser();
         }).catch(() => {
-          // Fallback simulation if monetag promise rejects or completes immediately
           let progress = 0;
           const interval = setInterval(()=>{
             progress += 100/30;
@@ -1161,7 +1158,6 @@
           }, 100);
         });
       } else {
-        // Fallback simulation if SDK not present
         let progress = 0;
         const interval = setInterval(()=>{
           progress += 100/30;
