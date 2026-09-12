@@ -20,7 +20,7 @@ if (!MONGODB_URI) {
 }
 
 const REWARD = 0.15;
-const DAILY_LIMIT = 5;
+const DAILY_LIMIT = 10; // Changed from 5 to 10 to match your frontend UI (5 Monetag + 5 Adsterra)
 const AD_COOLDOWN_SECONDS = 30;
 const REFERRAL_BONUS = 0.50;
 const MIN_WITHDRAW = 20;
