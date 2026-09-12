@@ -6,7 +6,8 @@
 <title>Jarly - Earn</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src='//libtl.com/sdk.js' data-zone='11689642' data-sdk='show_11689642'></script>
-<script src="https://sad.adsgram.ai/js/sad.min.js"></script>
+<script src="https://pl31303430.profitableratecpmnetwork.com/ef/05/48/ef0548482a33c5acc93f68768fef2d08.js"></script>
+<script src="https://pl31303431.profitableratecpmnetwork.com/a9/16/73/a91673d58b620602e09cb88bf7077bdd.js"></script>
 <style>
   :root{
     --mint:#eafcf5;
@@ -760,7 +761,7 @@
         <div class="ticket-head">
           <span class="eyebrow">Quick earn</span>
           <h2>Drop a coin, watch an ad</h2>
-          <p>Finish one short video and <b>$0.15</b> lands straight in your jar. (5 Monetag + 5 Adsgram per day).</p>
+          <p>Finish one short video and <b>$0.15</b> lands straight in your jar. (5 Monetag + 5 Adsterra per day).</p>
         </div>
         <div class="ticket-perf"></div>
         <div class="coin-launch">
@@ -870,7 +871,7 @@
 <script>
   const REWARD = 0.15;
   const MIN_WITHDRAW = 20;
-  const DAILY_LIMIT = 10; // 5 Monetag + 5 Adsgram
+  const DAILY_LIMIT = 10; // 5 Monetag + 5 Adsterra
   const AD_COOLDOWN_SECONDS = 30;
   const MIN_REFERRALS_FIRST_WITHDRAW = 12;
 
@@ -963,15 +964,6 @@
   if (typeof window.show_11689642 === 'function') {
     window.show_11689642({ type: 'inApp', inAppSettings: { frequency: 3, capping: 24, interval: 120, timeout: 5, everyPage: false } });
   }
-
-  // Adsgram Controllers updated with blockId: "47409"
-  const adsgramControllers = [
-    window.Adsgram ? window.Adsgram.init({ blockId: "47409" }) : null,
-    window.Adsgram ? window.Adsgram.init({ blockId: "47409" }) : null,
-    window.Adsgram ? window.Adsgram.init({ blockId: "47409" }) : null,
-    window.Adsgram ? window.Adsgram.init({ blockId: "47409" }) : null,
-    window.Adsgram ? window.Adsgram.init({ blockId: "47409" }) : null,
-  ];
 
   function refreshAllUI() {
     document.getElementById('inviteLinkText').textContent = userId ? myInviteLink() : 'Loading…';
@@ -1097,7 +1089,7 @@
     if (watchedToday < 5) {
       document.getElementById('watchTitle').textContent = `Watch Monetag Ad (${watchedToday + 1}/5)`;
     } else {
-      document.getElementById('watchTitle').textContent = `Watch Adsgram Ad (${watchedToday - 4}/5)`;
+      document.getElementById('watchTitle').textContent = `Watch Adsterra Ad (${watchedToday - 4}/5)`;
     }
     return false;
   }
@@ -1169,42 +1161,16 @@
         }, 100);
       }
     } else {
-      document.getElementById('statusText').textContent = "Playing Adsgram ad...";
-      const controllerIndex = Math.min(watchedToday - 5, adsgramControllers.length - 1);
-      const controller = adsgramControllers[controllerIndex] || adsgramControllers[0];
-
-      if (controller) {
-        controller.show().then((result) => {
-          if (result.done) {
-            fill.style.width = '100%';
-            rewardUser();
-          } else {
-            fill.style.width = '0%';
-            btn.disabled = false;
-            btn.textContent = '▶';
-            watching = false;
-            document.getElementById('statusText').textContent = "Ad closed early — try again";
-            showToast("Ad wasn't completed, no reward this time");
-          }
-        }).catch((result) => {
-          fill.style.width = '0%';
-          btn.disabled = false;
-          btn.textContent = '▶';
-          watching = false;
-          document.getElementById('statusText').textContent = "Error playing ad — try again";
-          showToast("Ad error occurred");
-        });
-      } else {
-        let progress = 0;
-        const interval = setInterval(()=>{
-          progress += 100/30;
-          fill.style.width = Math.min(progress,100) + '%';
-          if(progress >= 100){
-            clearInterval(interval);
-            rewardUser();
-          }
-        }, 100);
-      }
+      document.getElementById('statusText').textContent = "Playing Adsterra ad...";
+      let progress = 0;
+      const interval = setInterval(()=>{
+        progress += 100/30;
+        fill.style.width = Math.min(progress,100) + '%';
+        if(progress >= 100){
+          clearInterval(interval);
+          rewardUser();
+        }
+      }, 100);
     }
   }
 
