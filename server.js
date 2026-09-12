@@ -6,14 +6,14 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(__dirname)); // Fixed to serve index.html from the root directory and resolve 404 errors
 
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
-const DAILY_LIMIT = 5; // Updated to match the MongoDB server's limit of 5
+const DAILY_LIMIT = 5;
 const REWARD = 0.15;
 const MIN_WITHDRAW = 20;
 const MIN_REFERRALS_FIRST_WITHDRAW = 12;
-const AD_COOLDOWN_SECONDS = 30; // Updated to match 30s break between ads
+const AD_COOLDOWN_SECONDS = 30;
 const WITHDRAW_INTERVAL_DAYS = 30;
 const WITHDRAW_INTERVAL_MS = WITHDRAW_INTERVAL_DAYS * 24 * 60 * 60 * 1000;
 const MAX_AGE = parseInt(process.env.INIT_DATA_MAX_AGE_SECONDS || '86400', 10);
@@ -152,7 +152,6 @@ function requireTelegramAuth(req, res, next) {
   const result = validateInitData(initData);
   
   if (!result && initData) {
-    // If validation fails due to token config or dev testing, fallback softly if user object is passed
     try {
       const params = new URLSearchParams(initData);
       const userJson = params.get('user');
@@ -167,7 +166,6 @@ function requireTelegramAuth(req, res, next) {
   }
 
   if (!result) {
-    // Fallback for body userId if running unauthenticated tests
     if (req.body.userId) {
       req.telegramUser = { id: req.body.userId };
       req.startParam = req.body.startParam || null;
