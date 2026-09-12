@@ -1,61 +1,100 @@
-const express = require('express');
+require('dotenv').config();
 const crypto = require('crypto');
-const path = require('path');
+const express = require('express');
 const cors = require('cors');
+const mongoose = require('mongoose');
 
-const app = express();
-app.use(cors());
-app.use(express.json());
-app.use(express.static(__dirname)); // Fixed to serve index.html from the root directory and resolve 404 errors
-
-const BOT_TOKEN = process.env.BOT_TOKEN || '';
-const DAILY_LIMIT = 5;
-const REWARD = 0.15;
-const MIN_WITHDRAW = 20;
-const MIN_REFERRALS_FIRST_WITHDRAW = 12;
-const AD_COOLDOWN_SECONDS = 30;
-const WITHDRAW_INTERVAL_DAYS = 30;
-const WITHDRAW_INTERVAL_MS = WITHDRAW_INTERVAL_DAYS * 24 * 60 * 60 * 1000;
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN;
+const MONGODB_URI = process.env.MONGODB_URI;
+const PORT = process.env.PORT || 3000;
 const MAX_AGE = parseInt(process.env.INIT_DATA_MAX_AGE_SECONDS || '86400', 10);
 
-const users = {};
+if (!BOT_TOKEN) {
+  console.error('Missing Telegram Bot Token in environment variables.');
+  process.exit(1);
+}
+
+if (!MONGODB_URI) {
+  console.error('Missing MONGODB_URI in environment variables.');
+  process.exit(1);
+}
+
+const REWARD = 0.15;
+const DAILY_LIMIT = 5;
+const AD_COOLDOWN_SECONDS = 30;
+const REFERRAL_BONUS = 0.50;
+const MIN_WITHDRAW = 20;
+const MIN_REFERRALS_FIRST_WITHDRAW = 12;
+const WITHDRAW_INTERVAL_DAYS = 30;
+const WITHDRAW_INTERVAL_MS = WITHDRAW_INTERVAL_DAYS * 24 * 60 * 60 * 1000;
+
+// Connect to MongoDB to ensure data persists across restarts/redeploys[span_2](start_span)[span_2](end_span)
+mongoose.connect(MONGODB_URI)
+  .then(() => console.log('MongoDB connected successfully'))
+  .catch(err => {
+    console.error('MongoDB connection error:', err);
+    process.exit(1);
+  });
+
+const userSchema = new mongoose.Schema({
+  _id: { type: String }, // Telegram user id
+  firstName: { type: String, default: '' },
+  lastName: { type: String, default: '' },
+  username: { type: String, default: '' },
+  balance: { type: Number, default: 0 },
+  totalEarned: { type: Number, default: 0 },
+  totalWatched: { type: Number, default: 0 },
+  watchedToday: { type: Number, default: 0 },
+  lastWatchDate: { type: String, default: '' },
+  lastAdWatchAt: { type: Date, default: null },
+  referredBy: { type: String, default: null },
+  referralBonusGiven: { type: Boolean, default: false },
+  inviteCount: { type: Number, default: 0 },
+  inviteEarned: { type: Number, default: 0 },
+  lastWithdrawAt: { type: Date, default: null },
+  createdAt: { type: Date, default: Date.now },
+});
+
+const withdrawalSchema = new mongoose.Schema({
+  userId: { type: String, required: true },
+  amount: { type: Number, required: true },
+  method: { type: String, default: 'unknown' },
+  destination: { type: String, default: '' },
+  status: { type: String, default: 'Pending' },
+  createdAt: { type: Date, default: Date.now },
+});
+
+const User = mongoose.model('User', userSchema);
+const Withdrawal = mongoose.model('Withdrawal', withdrawalSchema);
 
 function validateInitData(initData) {
   if (!initData || typeof initData !== 'string') return null;
 
+  const params = new URLSearchParams(initData);
+  const hash = params.get('hash');
+  if (!hash) return null;
+  params.delete('hash');
+
+  const dataCheckString = [...params.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n');
+
+  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
+  const computedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+
+  if (computedHash !== hash) return null;
+
+  const authDate = parseInt(params.get('auth_date') || '0', 10);
+  if (!authDate || Date.now() / 1000 - authDate > MAX_AGE) return null;
+
+  const userJson = params.get('user');
+  if (!userJson) return null;
+
   try {
-    const params = new URLSearchParams(initData);
-    const hash = params.get('hash');
-    if (!hash) return null;
-    params.delete('hash');
-
-    const dataCheckString = [...params.entries()]
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([k, v]) => `${k}=${v}`)
-      .join('\n');
-
-    if (BOT_TOKEN) {
-      const secretKey = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
-      const computedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
-      if (computedHash !== hash) {
-        // Validation check fallback
-      }
-    }
-
-    const authDate = parseInt(params.get('auth_date') || '0', 10);
-    if (authDate && Date.now() / 1000 - authDate > MAX_AGE) {
-      return null;
-    }
-
-    const userJson = params.get('user');
-    if (!userJson) return null;
-
-    return {
-      user: JSON.parse(userJson),
-      startParam: params.get('start_param') || null
-    };
-  } catch (e) {
-    console.error("Error parsing initData:", e);
+    const user = JSON.parse(userJson);
+    return { user, startParam: params.get('start_param') || null };
+  } catch {
     return null;
   }
 }
@@ -64,50 +103,17 @@ function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function getOrCreateUser(userId, startParam = '', tgUser = null) {
-  const today = todayStr();
-  if (!users[userId]) {
-    users[userId] = {
-      userId,
-      firstName: tgUser?.first_name || '',
-      lastName: tgUser?.last_name || '',
-      username: tgUser?.username || '',
-      balance: 0,
-      totalEarned: 0,
-      totalWatched: 0,
-      watchedToday: 0,
-      lastWatchDate: today,
-      lastAdWatchAt: null,
-      inviteCount: 0,
-      inviteEarned: 0,
-      referredBy: null,
-      referralBonusGiven: false,
-      withdrawals: [],
-      lastWithdrawAt: null,
-      createdAt: new Date()
-    };
-
-    if (startParam) {
-      const ref = startParam.replace(/^ref_/, '');
-      if (ref && ref !== userId && users[ref]) {
-        users[userId].referredBy = ref;
-      }
-    }
+async function resetDailyIfNeeded(userDoc) {
+  if (userDoc.lastWatchDate !== todayStr()) {
+    userDoc.watchedToday = 0;
+    userDoc.lastWatchDate = todayStr();
+    await userDoc.save();
   }
+  return userDoc;
+}
 
-  const user = users[userId];
-  if (user.lastWatchDate !== today) {
-    user.watchedToday = 0;
-    user.lastWatchDate = today;
-  }
-
-  if (tgUser) {
-    user.firstName = tgUser.first_name || '';
-    user.lastName = tgUser.last_name || '';
-    user.username = tgUser.username || '';
-  }
-
-  return user;
+function round2(n) {
+  return Math.round(n * 100) / 100;
 }
 
 function toClientShape(userDoc) {
@@ -127,15 +133,15 @@ function toClientShape(userDoc) {
   const referralsSatisfied = !isFirstWithdrawal || userDoc.inviteCount >= MIN_REFERRALS_FIRST_WITHDRAW;
 
   return {
-    userId: userDoc.userId,
-    balance: Math.round(userDoc.balance * 100) / 100,
-    totalEarned: Math.round(userDoc.totalEarned * 100) / 100,
+    userId: userDoc._id,
+    balance: round2(userDoc.balance),
+    totalEarned: round2(userDoc.totalEarned),
     totalWatched: userDoc.totalWatched,
     watchedToday: userDoc.watchedToday,
     dailyLimit: DAILY_LIMIT,
     adCooldownRemainingSeconds,
     inviteCount: userDoc.inviteCount,
-    inviteEarned: Math.round(userDoc.inviteEarned * 100) / 100,
+    inviteEarned: round2(userDoc.inviteEarned),
     withdraw: {
       minAmount: MIN_WITHDRAW,
       minReferralsForFirstWithdraw: MIN_REFERRALS_FIRST_WITHDRAW,
@@ -148,23 +154,7 @@ function toClientShape(userDoc) {
 }
 
 function requireTelegramAuth(req, res, next) {
-  const initData = req.body.initData;
-  const result = validateInitData(initData);
-  
-  if (!result && initData) {
-    try {
-      const params = new URLSearchParams(initData);
-      const userJson = params.get('user');
-      if (userJson) {
-        req.telegramUser = JSON.parse(userJson);
-        req.startParam = params.get('start_param') || null;
-        return next();
-      }
-    } catch (err) {
-      // ignore
-    }
-  }
-
+  const result = validateInitData(req.body.initData);
   if (!result) {
     if (req.body.userId) {
       req.telegramUser = { id: req.body.userId };
@@ -173,105 +163,161 @@ function requireTelegramAuth(req, res, next) {
     }
     return res.status(401).json({ error: 'Invalid or expired Telegram session. Please reopen the app.' });
   }
-
   req.telegramUser = result.user;
   req.startParam = result.startParam;
   next();
 }
 
-app.post('/api/auth', requireTelegramAuth, (req, res) => {
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.static(__dirname));
+
+app.post('/api/auth', requireTelegramAuth, async (req, res) => {
   try {
     const tgUser = req.telegramUser;
-    const userId = String(tgUser.id);
-    const user = getOrCreateUser(userId, req.startParam, tgUser);
-    res.json(toClientShape(user));
+    const id = String(tgUser.id);
+    let userDoc = await User.findById(id);
+
+    if (!userDoc) {
+      userDoc = new User({
+        _id: id,
+        firstName: tgUser.first_name || '',
+        lastName: tgUser.last_name || '',
+        username: tgUser.username || '',
+        lastWatchDate: todayStr(),
+      });
+
+      const ref = req.startParam ? req.startParam.replace(/^ref_/, '') : null;
+      if (ref && ref !== id) {
+        const referrer = await User.findById(ref);
+        if (referrer) {
+          userDoc.referredBy = ref;
+        }
+      }
+
+      await userDoc.save();
+    } else {
+      userDoc.firstName = tgUser.first_name || '';
+      userDoc.lastName = tgUser.last_name || '';
+      userDoc.username = tgUser.username || '';
+      await userDoc.save();
+      userDoc = await resetDailyIfNeeded(userDoc);
+    }
+
+    res.json(toClientShape(userDoc));
   } catch (err) {
     console.error('auth error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-app.post('/api/stats', requireTelegramAuth, (req, res) => {
+app.post('/api/watch-ad', requireTelegramAuth, async (req, res) => {
   try {
-    const userId = String(req.telegramUser.id);
-    const user = getOrCreateUser(userId);
-    res.json(toClientShape(user));
-  } catch (err) {
-    console.error('stats error:', err);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
+    const id = String(req.telegramUser.id);
+    let userDoc = await User.findById(id);
+    if (!userDoc) return res.status(404).json({ error: 'User not found. Call /api/auth first.' });
 
-app.post('/api/watch-ad', requireTelegramAuth, (req, res) => {
-  try {
-    const userId = String(req.telegramUser.id);
-    const user = getOrCreateUser(userId);
+    userDoc = await resetDailyIfNeeded(userDoc);
 
     const today = todayStr();
-    if (user.lastWatchDate !== today) {
-      user.watchedToday = 0;
-      user.lastWatchDate = today;
-    }
-
-    if (user.watchedToday >= DAILY_LIMIT) {
-      return res.status(400).json({ error: 'Daily limit reached' });
-    }
-
     const now = new Date();
-    if (user.lastAdWatchAt) {
-      const elapsedMs = now.getTime() - user.lastAdWatchAt.getTime();
-      const cooldownMs = AD_COOLDOWN_SECONDS * 1000;
-      if (elapsedMs < cooldownMs) {
-        const waitSeconds = Math.ceil((cooldownMs - elapsedMs) / 1000);
-        return res.status(429).json({ error: `Please wait ${waitSeconds}s before watching another ad.`, waitSeconds });
+    const cooldownCutoff = new Date(now.getTime() - AD_COOLDOWN_SECONDS * 1000);
+
+    const updated = await User.findOneAndUpdate(
+      {
+        _id: id,
+        lastWatchDate: today,
+        watchedToday: { $lt: DAILY_LIMIT },
+        $or: [
+          { lastAdWatchAt: null },
+          { lastAdWatchAt: { $lte: cooldownCutoff } },
+        ],
+      },
+      {
+        $inc: { balance: REWARD, totalEarned: REWARD, totalWatched: 1, watchedToday: 1 },
+        $set: { lastWatchDate: today, lastAdWatchAt: now },
+      },
+      { new: true }
+    );
+
+    if (!updated) {
+      const fresh = await resetDailyIfNeeded(await User.findById(id));
+
+      if (fresh.watchedToday >= DAILY_LIMIT) {
+        return res.status(400).json({ error: 'Daily limit reached' });
       }
+
+      if (fresh.lastAdWatchAt) {
+        const elapsedMs = Date.now() - fresh.lastAdWatchAt.getTime();
+        const cooldownMs = AD_COOLDOWN_SECONDS * 1000;
+        if (elapsedMs < cooldownMs) {
+          const waitSeconds = Math.ceil((cooldownMs - elapsedMs) / 1000);
+          return res.status(429).json({ error: `Please wait ${waitSeconds}s before watching another ad.`, waitSeconds });
+        }
+      }
+
+      return res.status(400).json({ error: 'Could not record this ad — please try again.' });
     }
 
-    user.watchedToday += 1;
-    user.totalWatched += 1;
-    user.balance += REWARD;
-    user.totalEarned += REWARD;
-    user.lastAdWatchAt = now;
-
+    userDoc = updated;
     let rewarded = false;
-    if (user.watchedToday === DAILY_LIMIT && user.referredBy && !user.referralBonusGiven) {
-      const referrer = users[user.referredBy];
+
+    if (userDoc.watchedToday === DAILY_LIMIT && userDoc.referredBy && !userDoc.referralBonusGiven) {
+      const referrer = await User.findById(userDoc.referredBy);
       if (referrer) {
-        referrer.balance += 0.50;
-        referrer.inviteEarned += 0.50;
+        referrer.balance += REFERRAL_BONUS;
+        referrer.inviteEarned += REFERRAL_BONUS;
         referrer.inviteCount += 1;
-        user.referralBonusGiven = true;
+        await referrer.save();
+
+        userDoc.referralBonusGiven = true;
+        await userDoc.save();
         rewarded = true;
       }
     }
 
-    res.json({ ...toClientShape(user), rewarded });
+    res.json({ ...toClientShape(userDoc), rewarded });
   } catch (err) {
     console.error('watch-ad error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-app.post('/api/withdraw', requireTelegramAuth, (req, res) => {
+app.post('/api/stats', requireTelegramAuth, async (req, res) => {
   try {
-    const userId = String(req.telegramUser.id);
+    const id = String(req.telegramUser.id);
+    let userDoc = await User.findById(id);
+    if (!userDoc) return res.status(404).json({ error: 'User not found' });
+    userDoc = await resetDailyIfNeeded(userDoc);
+    res.json(toClientShape(userDoc));
+  } catch (err) {
+    console.error('stats error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/withdraw', requireTelegramAuth, async (req, res) => {
+  try {
+    const id = String(req.telegramUser.id);
     const { amount, method, destination } = req.body;
-    const user = getOrCreateUser(userId);
+    const userDoc = await User.findById(id);
+    if (!userDoc) return res.status(404).json({ error: 'User not found' });
 
     const amt = parseFloat(amount);
-    if (isNaN(amt) || amt < MIN_WITHDRAW || amt > user.balance) {
+    if (isNaN(amt) || amt < MIN_WITHDRAW || amt > userDoc.balance) {
       return res.status(400).json({ error: `Invalid amount. Minimum withdrawal is $${MIN_WITHDRAW}.` });
     }
 
-    const isFirstWithdrawal = !user.lastWithdrawAt;
-    if (isFirstWithdrawal && user.inviteCount < MIN_REFERRALS_FIRST_WITHDRAW) {
+    const isFirstWithdrawal = !userDoc.lastWithdrawAt;
+    if (isFirstWithdrawal && userDoc.inviteCount < MIN_REFERRALS_FIRST_WITHDRAW) {
       return res.status(400).json({
-        error: `Your first withdrawal requires at least ${MIN_REFERRALS_FIRST_WITHDRAW} referrals. You currently have ${user.inviteCount}.`,
+        error: `Your first withdrawal requires at least ${MIN_REFERRALS_FIRST_WITHDRAW} referrals. You currently have ${userDoc.inviteCount}.`,
       });
     }
 
-    const referenceDate = user.lastWithdrawAt || user.createdAt;
-    const nextAvailable = new Date(referenceDate).getTime() + WITHDRAW_INTERVAL_MS;
+    const referenceDate = userDoc.lastWithdrawAt || userDoc.createdAt;
+    const nextAvailable = referenceDate.getTime() + WITHDRAW_INTERVAL_MS;
     if (Date.now() < nextAvailable) {
       return res.status(400).json({
         error: `Withdrawals are available every ${WITHDRAW_INTERVAL_DAYS} days.`,
@@ -279,29 +325,22 @@ app.post('/api/withdraw', requireTelegramAuth, (req, res) => {
       });
     }
 
-    user.balance -= amt;
-    user.lastWithdrawAt = new Date();
+    userDoc.balance -= amt;
+    userDoc.lastWithdrawAt = new Date();
+    await userDoc.save();
 
-    const withdrawalId = crypto.randomUUID ? crypto.randomUUID() : 'w_' + Date.now();
-    const withdrawal = {
-      _id: withdrawalId,
-      userId,
+    const withdrawal = await Withdrawal.create({
+      userId: id,
       amount: amt,
       method: method || 'unknown',
       destination: destination || '',
-      status: 'Pending',
-      createdAt: new Date()
-    };
-    user.withdrawals.unshift(withdrawal);
+    });
 
-    res.json({ withdrawalId: withdrawal._id, ...toClientShape(user) });
+    res.json({ withdrawalId: withdrawal._id, ...toClientShape(userDoc) });
   } catch (err) {
     console.error('withdraw error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Jarly backend server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Jarly backend listening on port ${PORT}`));
