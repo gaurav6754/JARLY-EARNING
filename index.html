@@ -6,8 +6,6 @@
 <title>Jarly - Earn</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src='//libtl.com/sdk.js' data-zone='11689642' data-sdk='show_11689642'></script>
-<script src="https://pl31303430.profitableratecpmnetwork.com/ef/05/48/ef0548482a33c5acc93f68768fef2d08.js"></script>
-<script src="https://pl31303431.profitableratecpmnetwork.com/a9/16/73/a91673d58b620602e09cb88bf7077bdd.js"></script>
 <style>
   :root{
     --mint:#eafcf5;
@@ -761,7 +759,7 @@
         <div class="ticket-head">
           <span class="eyebrow">Quick earn</span>
           <h2>Drop a coin, watch an ad</h2>
-          <p>Finish one short video and <b>$0.15</b> lands straight in your jar. (5 Monetag + 5 Adsterra per day).</p>
+          <p>Finish one short video and <b>$0.15</b> lands straight in your jar. (Limit 5 per day).</p>
         </div>
         <div class="ticket-perf"></div>
         <div class="coin-launch">
@@ -776,7 +774,7 @@
           <div class="track"><div class="track-fill" id="progressFill"></div></div>
           <div class="track-label">
             <span>Today's coins</span>
-            <span><span id="watchedToday">0</span> / 10 watched</span>
+            <span><span id="watchedToday">0</span> / 5 watched</span>
           </div>
         </div>
         <div class="status-strip">
@@ -801,7 +799,7 @@
     <div class="view" id="view-invite">
       <div class="invite-card">
         <h2>Invite friends, earn together</h2>
-        <p>You both get <b>$0.50</b> when they join through your link and watch ads.</p>
+        <p>You both get <b>$0.50</b> when they join through your link and watch 5 ads.</p>
         <div class="code-row">
           <span id="inviteLinkText">https://...</span>
           <button class="copy-btn" onclick="copyLink()">📋</button>
@@ -871,7 +869,7 @@
 <script>
   const REWARD = 0.15;
   const MIN_WITHDRAW = 20;
-  const DAILY_LIMIT = 10; // 5 Monetag + 5 Adsterra
+  const DAILY_LIMIT = 5;
   const AD_COOLDOWN_SECONDS = 30;
   const MIN_REFERRALS_FIRST_WITHDRAW = 12;
 
@@ -879,8 +877,12 @@
   const tg = window.Telegram.WebApp;
   tg.ready();
 
+  // The RAW signed initData string — this (not initDataUnsafe) is what proves
+  // to the server "this really is Telegram user X". Never trust a client-side
+  // user id for anything that grants money; the server re-derives it from this.
   const rawInitData = tg.initData;
 
+  // These are placeholders until /api/auth responds with server-verified values.
   let userId = tg.initDataUnsafe?.user?.id ? String(tg.initDataUnsafe.user.id) : null;
   let balance = 0, totalEarned = 0, totalWatched = 0, watchedToday = 0, inviteCount = 0, inviteEarned = 0;
   let watching = false;
@@ -888,6 +890,8 @@
 
   const myInviteLink = () => `https://t.me/Jarly66_bot?startapp=ref_${userId}`;
 
+  // Local cache only (for instant paint before /api/auth returns) — never
+  // treated as the source of truth. The server response always wins.
   const STORAGE_PREFIX = 'jarly_cache_';
   function loadCache() {
     try {
@@ -902,7 +906,7 @@
   }
 
   let adCooldownRemainingSeconds = 0;
-  let withdrawInfo = null;
+  let withdrawInfo = null; // { minAmount, minReferralsForFirstWithdraw, isFirstWithdrawal, referralsSatisfied, nextWithdrawAvailableAt, eligibleNow }
   let adCooldownTimer = null;
 
   function applyServerState(data) {
@@ -926,6 +930,7 @@
     }));
   }
 
+  // Parse withdrawal history (cosmetic/local only — server is source of truth for balance)
   let withdrawalHistory = [];
   try {
     const savedHistory = localStorage.getItem(STORAGE_PREFIX + 'history_' + (userId || 'guest'));
@@ -938,6 +943,9 @@
     localStorage.setItem(STORAGE_PREFIX + 'history_' + userId, JSON.stringify(withdrawalHistory));
   }
 
+  // Extract the referral code from the deep link (?start=ref_XXXX) purely for
+  // display before auth resolves — the server independently re-derives and
+  // verifies start_param from the signed initData, so this value is never trusted.
   const startParamRaw = tg.initDataUnsafe?.start_param || new URLSearchParams(window.location.search).get('ref');
 
   function initAuth() {
@@ -960,11 +968,12 @@
       });
   }
 
-  // Monetag SDK Initialization
+  // Monetag Config
   if (typeof window.show_11689642 === 'function') {
     window.show_11689642({ type: 'inApp', inAppSettings: { frequency: 3, capping: 24, interval: 120, timeout: 5, everyPage: false } });
   }
 
+  // Initialize UI Text
   function refreshAllUI() {
     document.getElementById('inviteLinkText').textContent = userId ? myInviteLink() : 'Loading…';
     document.getElementById('balance').textContent = balance.toFixed(2);
@@ -980,6 +989,9 @@
     renderWithdrawEligibilityBanner();
   }
 
+  // Shows why cashing out isn't available yet (referrals needed, or the
+  // 30-day gap since last withdrawal / signup hasn't passed). Hides itself
+  // once the user is fully eligible.
   function renderWithdrawEligibilityBanner(){
     const banner = document.getElementById('withdrawEligibilityBanner');
     if (!banner || !withdrawInfo) { if(banner) banner.style.display = 'none'; return; }
@@ -1003,9 +1015,20 @@
   }
 
   window.onload = () => {
-    loadCache();
+    loadCache();       // instant paint from last-known values
     refreshAllUI();
-    initAuth();
+    initAuth();         // then verify with server and correct if needed
+
+    // TEMPORARY DEBUG: shows whether a referral code was picked up on this
+    // launch, so you can visually confirm it on the referred phone. Remove
+    // this block once referrals are confirmed working.
+    setTimeout(() => {
+      if (startParamRaw) {
+        showToast('DEBUG: referral code detected → ' + startParamRaw);
+      } else {
+        showToast('DEBUG: no referral code detected on this launch');
+      }
+    }, 1200);
   };
 
   function updateClock(){
@@ -1026,6 +1049,7 @@
 
   function scrollTop(){ window.scrollTo({top:0, behavior:'smooth'}); }
 
+  /* ---------- view switching ---------- */
   const views = ['earn','invite','cashout'];
   function showView(name){
     views.forEach(v=>{ document.getElementById('view-'+v)?.classList.toggle('active', v===name); });
@@ -1035,6 +1059,7 @@
     closeMenu(); window.scrollTo({top:0, behavior:'smooth'});
   }
 
+  /* ---------- menu & sheets ---------- */
   function toggleMenu(){
     const menu = document.getElementById('menuDropdown');
     const chip = document.getElementById('menuChip');
@@ -1061,10 +1086,11 @@
   function closeSheet(){ document.getElementById('overlay').classList.remove('show'); }
   function openSupport(){ openSheet('Support', "We're here to help. Chat replies usually arrive within a few minutes during daytime hours."); }
   function openProfile(){ 
-    const userName = tg.initDataUnsafe?.user ? (tg.initDataUnsafe.user.first_name + (tg.initDataUnsafe.user.last_name ? ' ' + tg.initDataUnsafe.user.last_name : '')) : 'Guest User';
+    const userName = telegramUser ? (telegramUser.first_name + (telegramUser.last_name ? ' ' + telegramUser.last_name : '')) : 'Guest User';
     openSheet('Your profile', `${userName} · Telegram ID: ${userId}`); 
   }
 
+  /* ---------- earn / watch ad ---------- */
   function updateJarFill(){
     const pct = Math.min(balance / MIN_WITHDRAW, 1);
     const jar = document.getElementById('jarFill');
@@ -1085,18 +1111,15 @@
       document.getElementById('statusPulse').style.boxShadow = 'none';
       return true;
     }
-    
-    if (watchedToday < 5) {
-      document.getElementById('watchTitle').textContent = `Watch Monetag Ad (${watchedToday + 1}/5)`;
-    } else {
-      document.getElementById('watchTitle').textContent = `Watch Adsterra Ad (${watchedToday - 4}/5)`;
-    }
     return false;
   }
 
+  // Disables the watch button and shows a live countdown while a cooldown
+  // (server-enforced, 60s between ads) is active. Re-enables automatically
+  // when it hits zero, unless the daily limit is also reached.
   function startAdCooldownCountdownIfNeeded() {
     clearInterval(adCooldownTimer);
-    if (checkDailyLimit()) return;
+    if (checkDailyLimit()) return; // daily-limit message takes priority
     if (!adCooldownRemainingSeconds || adCooldownRemainingSeconds <= 0) return;
 
     const btn = document.getElementById('watchBtn');
@@ -1110,11 +1133,13 @@
         if (!checkDailyLimit()) {
           btn.disabled = false;
           btn.textContent = '▶';
+          document.getElementById('watchTitle').textContent = "Watch & Earn";
           document.getElementById('statusText').textContent = "Jar's open — ready when you are";
         }
         return;
       }
       btn.textContent = adCooldownRemainingSeconds + 's';
+      document.getElementById('watchTitle').textContent = "On cooldown";
       document.getElementById('statusText').textContent = `Next ad in ${adCooldownRemainingSeconds}s`;
       adCooldownRemainingSeconds -= 1;
     };
@@ -1130,56 +1155,47 @@
     const fill = document.getElementById('progressFill');
     btn.disabled = true;
     btn.textContent = '⏳';
+    document.getElementById('statusText').textContent = "Playing your ad...";
 
-    if (watchedToday < 5) {
-      document.getElementById('statusText').textContent = "Playing Monetag ad...";
-      
-      if (typeof window.show_11689642 === 'function') {
-        window.show_11689642().then(() => {
-          fill.style.width = '100%';
-          rewardUser();
-        }).catch(() => {
-          let progress = 0;
-          const interval = setInterval(()=>{
-            progress += 100/30;
-            fill.style.width = Math.min(progress,100) + '%';
-            if(progress >= 100){
-              clearInterval(interval);
-              rewardUser();
-            }
-          }, 100);
-        });
-      } else {
-        let progress = 0;
-        const interval = setInterval(()=>{
-          progress += 100/30;
-          fill.style.width = Math.min(progress,100) + '%';
-          if(progress >= 100){
-            clearInterval(interval);
-            rewardUser();
-          }
-        }, 100);
-      }
-    } else {
-      document.getElementById('statusText').textContent = "Playing Adsterra ad...";
-      let progress = 0;
-      const interval = setInterval(()=>{
-        progress += 100/30;
-        fill.style.width = Math.min(progress,100) + '%';
-        if(progress >= 100){
-          clearInterval(interval);
-          rewardUser();
-        }
-      }, 100);
+    if (typeof window.show_11689642 === 'function') {
+      window.show_11689642().then(() => {
+        fill.style.width = '100%';
+        rewardUser();
+      }).catch(() => {
+        fill.style.width = '0%';
+        btn.disabled = false;
+        btn.textContent = '▶';
+        watching = false;
+        document.getElementById('statusText').textContent = "Ad didn't finish — try again";
+        showToast("Ad wasn't completed, no reward this time");
+      });
+      return;
     }
+
+    // Fallback simulation
+    let progress = 0;
+    const interval = setInterval(()=>{
+      progress += 100/30;
+      fill.style.width = Math.min(progress,100) + '%';
+      if(progress >= 100){
+        clearInterval(interval);
+        rewardUser();
+      }
+    }, 100);
   }
 
   let rewardRequestInFlight = false;
 
   function rewardUser(){
+    // Guard against the ad SDK's completion callback firing more than once
+    // for a single view (seen with some in-app ad units) — without this, a
+    // double-fire would send two /api/watch-ad requests for one ad watched.
     if (rewardRequestInFlight) return;
     rewardRequestInFlight = true;
 
+    // The server is the only source of truth for the reward — it validates
+    // initData, enforces the daily cap, and credits any referral bonus
+    // atomically. We just show whatever it tells us.
     fetch('/api/watch-ad', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1211,6 +1227,8 @@
         document.getElementById('progressFill').style.width = '0%';
 
         if (err && typeof err.waitSeconds === 'number') {
+          // Server says we're still on cooldown — sync up and show the countdown
+          // instead of leaving the button in a broken "try again" state.
           adCooldownRemainingSeconds = err.waitSeconds;
           showToast(err.error || `Please wait ${err.waitSeconds}s before the next ad`);
           startAdCooldownCountdownIfNeeded();
@@ -1222,10 +1240,14 @@
         btn.disabled = false;
         btn.textContent = '▶';
 
+        // Show the server's actual reason (e.g. "Daily limit reached") instead of
+        // a generic message — a rejection is not the same thing as a dropped connection.
         const reason = err?.error || "Couldn't record that ad — try again";
         document.getElementById('statusText').textContent = reason;
         showToast(reason);
 
+        // Whatever the server just said, re-pull the real numbers so the on-screen
+        // count/limit can never drift from what's actually stored.
         fetch('/api/stats', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1240,6 +1262,8 @@
       });
   }
 
+  // Periodically re-sync from the server (e.g. picks up a referral bonus
+  // credited because of someone else's activity, without needing a reload).
   setInterval(() => {
     if (!authReady) return;
     fetch('/api/stats', {
@@ -1252,6 +1276,7 @@
       .catch(() => {});
   }, 5000);
 
+  /* ---------- invite ---------- */
   function copyLink(){
     if(navigator.clipboard){
       navigator.clipboard.writeText(myInviteLink()).then(()=> showToast('Link copied!')).catch(()=> showToast('Link: '+myInviteLink()));
@@ -1273,6 +1298,7 @@
     }
   }
 
+  /* ---------- cash out ---------- */
   const methodIdMap = { methodPaypal:'paypal', methodBank:'bank', methodUsdt:'usdt' };
   let currentMethod = 'paypal';
 
@@ -1439,3 +1465,4 @@
 </script>
 </body>
 </html>
+
